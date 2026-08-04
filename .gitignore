@@ -1,0 +1,16 @@
+# Entorno Virtual
+venv/
+.venv/
+env/
+
+# Python bytecode y caché
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Variables de entorno secretas/locales
+.env
+
+# Base de datos local / logs
+*.log
+.pytest_cache/
