@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: benchmark_postgres
+    restart: always
+    environment:
+      # Lee del .env. Si no existe, usa lo que está después del guion medio (-)
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password_secreta}
+      POSTGRES_DB: ${POSTGRES_DB:-benchmark_engine}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Si querés que los scripts SQL se corran solos al levantar, descomentá esto:
+      # - ./database/production:/docker-entrypoint-initdb.d
+
+volumes:
+  postgres_data:
