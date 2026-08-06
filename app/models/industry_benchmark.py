@@ -1,6 +1,7 @@
 from sqlalchemy import String, Integer, Float, Text, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
+from datetime import datetime
 
 
 class IndustryBenchmark(Base):
@@ -35,4 +36,4 @@ class IndustryBenchmark(Base):
     level_5_metric_unit: Mapped[str] = mapped_column(String(20), nullable=True)
     level_5_likert_equivalent: Mapped[int] = mapped_column(Integer, default=5)
 
-    created_at: Mapped[str] = mapped_column(DateTime, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
