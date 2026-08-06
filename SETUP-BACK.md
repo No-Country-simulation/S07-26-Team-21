@@ -43,3 +43,14 @@ Para inyectar los benchmarks iniciales de la industria, ejecuta el script de see
 python seed.py
 ```
 *Si ves el mensaje de éxito, tu base de datos ya está lista con los 35 benchmarks.*
+
+## 6. ¿Cómo ver la Base de Datos?
+Para visualizar y manipular los datos de Docker, recomendamos usar **DBeaver** (gratis) o **TablePlus**. 
+
+Los datos de conexión locales son:
+- **Motor:** PostgreSQL
+- **Host:** localhost
+- **Puerto:** 5433
+- **Base de Datos:** benchmark_engine
+- **Usuario:** postgres
+- **Contraseña:** benchmark_password_2026
