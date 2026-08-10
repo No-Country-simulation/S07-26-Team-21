@@ -5,8 +5,12 @@ from app.schemas.benchmark_input import (
     RegionEnum,
 )
 from app.schemas.benchmark_output import (
-    BenchmarkResponseCreatedSchema,
+    BenchmarkResponse,
     BenchmarkResultSchema,
+    PercentilesResponse,
+    RebalancingStatusResponse,
+    ScoresLikertResponse,
+    UserContextResponse,
 )
 
 __all__ = [
@@ -14,6 +18,10 @@ __all__ = [
     "BenchmarkSubmitSchema",
     "FacilitySizeEnum",
     "RegionEnum",
+    "BenchmarkResponse",
     "BenchmarkResultSchema",
-    "BenchmarkResponseCreatedSchema",
+    "UserContextResponse",
+    "ScoresLikertResponse",
+    "PercentilesResponse",
+    "RebalancingStatusResponse",
 ]
