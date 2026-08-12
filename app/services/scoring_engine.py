@@ -12,7 +12,10 @@ Flujo:
     5. generate_recommendations()  → Recomendaciones priorizadas
     6. process_evaluation()        → Orquesta todo y persiste en BD
     7. build_result_response()     → Construye el JSON de respuesta para React
+    8. calculate_dimension_score() → US-4: promedio puro de una lista (sin BD)
 """
+
+from typing import List
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +77,40 @@ SCORE_COLUMNS: dict[str, any] = {
     "bloqueantes": UserEvaluation.score_bloqueantes,
 }
 
+# ─────────────────────────────────────────────────────────────
+# US-4: Función pura de promedio (sin acceso a BD)
+# ─────────────────────────────────────────────────────────────
+ 
+def calculate_dimension_score(p_list: List[int]) -> float:
+    """
+    Calcula el sub-score de una dimensión como el promedio aritmético
+    de sus preguntas Likert asociadas.
+ 
+    Función pura: no accede a la base de datos ni a ningún schema.
+    Por eso es 100% testeable de forma aislada
+    (ver tests/test_scoring_engine.py).
+ 
+    Args:
+        p_list: Respuestas Likert (enteros entre 1 y 5) de UNA dimensión.
+ 
+    Returns:
+        Promedio aritmético como float, en el rango [1.0, 5.0].
+ 
+    Raises:
+        ValueError: si `p_list` está vacía.
+ 
+    Ejemplo:
+        >>> calculate_dimension_score([3, 2, 4])
+        3.0
+        >>> calculate_dimension_score([1, 1, 1])
+        1.0
+        >>> calculate_dimension_score([5, 5, 5])
+        5.0
+    """
+    if not p_list:
+        raise ValueError("p_list no puede estar vacía: no hay nada que promediar.")
+ 
+    return sum(p_list) / len(p_list)
 
 # ─────────────────────────────────────────────────────────────
 # 1. Calcular Scores Likert por Dimensión
@@ -91,7 +128,7 @@ def compute_dimension_scores(data: BenchmarkSubmitSchema) -> dict[str, float]:
 
     for dimension, questions in DIMENSION_QUESTIONS.items():
         values = [data_dict[q] for q in questions]
-        scores[dimension] = round(sum(values) / len(values), 2)
+        scores[dimension] = round(calculate_dimension_score(values), 2)
 
     return scores
 
@@ -176,9 +213,15 @@ async def compute_percentiles(
 def identify_main_weakness(
     scores: dict[str, float],
     percentiles: dict[str, int],
-) -> MainWeaknessSchema | None:
+) -> str | None:
     """
-    Retorna la dimensión con el percentil más bajo.
+    Retorna el nombre de la dimensión con el percentil más bajo, como
+    string simple (alineado con BenchmarkResponse.main_weakness, US-2).
+ 
+    El score y el percentil de esa dimensión NO se repiten acá: ya
+    están disponibles en las secciones "scores_likert" y "percentiles"
+    de la respuesta, así que el frontend puede cruzarlos si los necesita.
+ 
     Es el área donde el usuario tiene mayor oportunidad de mejora.
     """
     # Filtrar solo dimensiones reales (excluir "general")
@@ -191,11 +234,7 @@ def identify_main_weakness(
 
     weakest_dim = min(dim_percentiles, key=dim_percentiles.get)
 
-    return MainWeaknessSchema(
-        dimension=DIMENSION_LABELS.get(weakest_dim, weakest_dim),
-        percentile=dim_percentiles[weakest_dim],
-        user_score=scores[weakest_dim],
-    )
+    return DIMENSION_LABELS.get(weakest_dim, weakest_dim)
 
 
 # ─────────────────────────────────────────────────────────────
