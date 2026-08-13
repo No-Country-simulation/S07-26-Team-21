@@ -65,6 +65,10 @@ class RebalancingStatusResponse(BaseModel):
         ..., description="Peso asignado a datos propios recolectados"
     )
 
+class MainWeaknessSchema(BaseModel):
+    # campos necesarios que use el scoring_engine
+    pass
+
 
 class BenchmarkResponse(BaseModel):
     """
