@@ -312,8 +312,63 @@ async def compute_percentiles(
 
 
 # ─────────────────────────────────────────────────────────────
-# 4. Identificar la Debilidad Principal
+# US-6 / Sección 4: Identificar la Debilidad Principal con Prioridad
 # ─────────────────────────────────────────────────────────────
+
+WEAKNESS_PRIORITY_ORDER: list[str] = [
+    "visibilidad",
+    "latencia",
+    "friccion",
+    "auto_cuantificacion",
+    "bloqueantes",
+]
+
+
+def get_main_weakness(dimension_percentiles: dict[str, int]) -> str:
+    """
+    Calcula la dimensión con el percentil más bajo (mayor oportunidad de mejora).
+
+    Si hay empate, aplica el orden de prioridad de causa raíz:
+        visibilidad > latencia > friccion > auto_cuantificacion > bloqueantes
+
+    Args:
+        dimension_percentiles: Diccionario con los percentiles por dimensión.
+
+    Returns:
+        Nombre de la dimensión más débil (ej: 'latencia', 'visibilidad').
+
+    Raises:
+        ValueError: si no se proporcionan dimensiones válidas.
+
+    Ejemplo:
+        >>> get_main_weakness({"visibilidad": 45, "friccion": 50, "latencia": 32, "auto_cuantificacion": 48, "bloqueantes": 40})
+        'latencia'
+    """
+    # Filtrar solo dimensiones válidas (excluir 'general' y claves ajenas)
+    valid_dims = {
+        dim: dimension_percentiles[dim]
+        for dim in WEAKNESS_PRIORITY_ORDER
+        if dim in dimension_percentiles
+    }
+
+    if not valid_dims:
+        raise ValueError(
+            "dimension_percentiles no contiene dimensiones válidas."
+        )
+
+    # 1. Obtener el percentil mínimo
+    min_val = min(valid_dims.values())
+
+    # 2. Identificar candidatos empatados en el mínimo
+    tied_dims = {dim for dim, val in valid_dims.items() if val == min_val}
+
+    # 3. Retornar el de mayor prioridad según la jerarquía de causa raíz
+    for dim in WEAKNESS_PRIORITY_ORDER:
+        if dim in tied_dims:
+            return dim
+
+    return next(iter(tied_dims))
+
 
 def identify_main_weakness(
     scores: dict[str, float],
@@ -321,25 +376,12 @@ def identify_main_weakness(
 ) -> str | None:
     """
     Retorna el nombre de la dimensión con el percentil más bajo, como
-    string simple (alineado con BenchmarkResponse.main_weakness, US-2).
- 
-    El score y el percentil de esa dimensión NO se repiten acá: ya
-    están disponibles en las secciones "scores_likert" y "percentiles"
-    de la respuesta, así que el frontend puede cruzarlos si los necesita.
- 
-    Es el área donde el usuario tiene mayor oportunidad de mejora.
+    string simple (alineado con BenchmarkResponse.main_weakness, US-2 y US-6).
     """
-    # Filtrar solo dimensiones reales (excluir "general")
-    dim_percentiles = {
-        k: v for k, v in percentiles.items() if k != "general"
-    }
-
-    if not dim_percentiles:
+    try:
+        return get_main_weakness(percentiles)
+    except ValueError:
         return None
-
-    weakest_dim = min(dim_percentiles, key=dim_percentiles.get)
-
-    return DIMENSION_LABELS.get(weakest_dim, weakest_dim)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -528,3 +570,49 @@ def build_result_response(evaluation: UserEvaluation) -> BenchmarkResultSchema:
         main_weakness=identify_main_weakness(scores, percentiles),
         recommendations=generate_recommendations(scores, percentiles),
     )
+
+
+
+# ─────────────────────────────────────────────────────────────
+# US-7 / Sección 8: Ponderación de Rebalanceo Bayesiano
+# ─────────────────────────────────────────────────────────────
+
+def calculate_rebalancing_weights(total_users: int) -> tuple[float, float]:
+    """
+    Pondera los benchmarks públicos vs privados según cuántos usuarios
+    acumula la base de datos (Rebalanceo Bayesiano).
+
+    Cuantos más usuarios privados, mayor peso se otorga a esos datos:
+        - <= 10 usuarios:  100% público (1.0),   0% privado (0.0)
+        - <= 50 usuarios:   80% público (0.8),  20% privado (0.2)
+        - <= 200 usuarios:  60% público (0.6),  40% privado (0.4)
+        - <= 500 usuarios:  40% público (0.4),  60% privado (0.6)
+        - > 500 usuarios:   20% público (0.2),  80% privado (0.8)
+
+    Args:
+        total_users: Cantidad total de usuarios/evaluaciones en BD.
+
+    Returns:
+        Tupla (weight_public, weight_private) que suman 1.0.
+
+    Raises:
+        ValueError: Si total_users es un número negativo.
+
+    Ejemplo:
+        >>> calculate_rebalancing_weights(150)
+        (0.6, 0.4)
+    """
+    if total_users < 0:
+        raise ValueError("total_users no puede ser un número negativo.")
+
+    if total_users <= 10:
+        return (1.0, 0.0)
+    elif total_users <= 50:
+        return (0.8, 0.2)
+    elif total_users <= 200:
+        return (0.6, 0.4)
+    elif total_users <= 500:
+        return (0.4, 0.6)
+    else:
+        return (0.2, 0.8)
+

@@ -1,7 +1,7 @@
 """
 tests/test_scoring_engine.py
 
-Unit tests para app/services/scoring_engine.py (US-4 y US-5).
+Unit tests para app/services/scoring_engine.py (US-4, US-5 y US-6).
 Correr con: pytest tests/services/test_scoring_engine.py -v
 """
 
@@ -11,8 +11,11 @@ import pytest
 from app.services.scoring_engine import (
     calculate_dimension_percentile,
     calculate_dimension_score,
+    calculate_rebalancing_weights,
+    get_main_weakness,
     _percentile_from_scores,
 )
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -132,3 +135,131 @@ async def test_calculate_dimension_percentile_invalid_dimension_raises():
     mock_db = AsyncMock()
     with pytest.raises(ValueError):
         await calculate_dimension_percentile("dimension_inexistente", 3.0, mock_db)
+
+
+# ─────────────────────────────────────────────────────────────
+# US-6: get_main_weakness (Identificar debilidad principal con desempate)
+# ─────────────────────────────────────────────────────────────
+
+def test_get_main_weakness_standard_example():
+    # Criterio US-6: {vis: 45, fric: 50, lat: 32, auto: 48, bloq: 40} → "latencia"
+    percentiles = {
+        "visibilidad": 45,
+        "friccion": 50,
+        "latencia": 32,
+        "auto_cuantificacion": 48,
+        "bloqueantes": 40,
+    }
+    assert get_main_weakness(percentiles) == "latencia"
+
+
+def test_get_main_weakness_tie_latency_vs_friction():
+    # Criterio US-6: Empate latencia=32 y friccion=32 → gana "latencia" por prioridad
+    percentiles = {
+        "visibilidad": 50,
+        "friccion": 32,
+        "latencia": 32,
+        "auto_cuantificacion": 60,
+        "bloqueantes": 40,
+    }
+    assert get_main_weakness(percentiles) == "latencia"
+
+
+def test_get_main_weakness_tie_visibility_vs_bloqueantes():
+    # Criterio US-6: Empate visibilidad=20 y bloqueantes=20 → gana "visibilidad" (causa raíz #1)
+    percentiles = {
+        "visibilidad": 20,
+        "friccion": 35,
+        "latencia": 40,
+        "auto_cuantificacion": 50,
+        "bloqueantes": 20,
+    }
+    assert get_main_weakness(percentiles) == "visibilidad"
+
+
+def test_get_main_weakness_tie_friction_vs_auto_cuantificacion():
+    # Criterio US-6: Empate friccion=25 y auto_cuantificacion=25 → gana "friccion"
+    percentiles = {
+        "visibilidad": 40,
+        "friccion": 25,
+        "latencia": 30,
+        "auto_cuantificacion": 25,
+        "bloqueantes": 50,
+    }
+    assert get_main_weakness(percentiles) == "friccion"
+
+
+def test_get_main_weakness_all_five_dimensions_tied():
+    # Criterio US-6: Empate total quíntuple (todas en 30%) → gana "visibilidad"
+    percentiles = {
+        "visibilidad": 30,
+        "friccion": 30,
+        "latencia": 30,
+        "auto_cuantificacion": 30,
+        "bloqueantes": 30,
+    }
+    assert get_main_weakness(percentiles) == "visibilidad"
+
+
+def test_get_main_weakness_ignores_general_key():
+    # Asegura que la clave "general" no sea seleccionada aunque tenga menor valor
+    percentiles = {
+        "visibilidad": 45,
+        "friccion": 50,
+        "latencia": 32,
+        "auto_cuantificacion": 48,
+        "bloqueantes": 40,
+        "general": 10,
+    }
+    assert get_main_weakness(percentiles) == "latencia"
+
+
+def test_get_main_weakness_empty_raises_value_error():
+    with pytest.raises(ValueError):
+        get_main_weakness({})
+
+
+# ─────────────────────────────────────────────────────────────
+# US-7: calculate_rebalancing_weights (Ponderación Bayesiana)
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "total_users, expected_weights",
+    [
+        (0, (1.0, 0.0)),
+        (5, (1.0, 0.0)),
+        (10, (1.0, 0.0)),
+        (11, (0.8, 0.2)),
+        (30, (0.8, 0.2)),
+        (50, (0.8, 0.2)),
+        (51, (0.6, 0.4)),
+        (150, (0.6, 0.4)),  # Criterio US-7: 150 usuarios → (0.6, 0.4)
+        (200, (0.6, 0.4)),
+        (201, (0.4, 0.6)),
+        (350, (0.4, 0.6)),
+        (500, (0.4, 0.6)),
+        (501, (0.2, 0.8)),
+        (1000, (0.2, 0.8)),
+    ],
+)
+def test_calculate_rebalancing_weights_ranges(total_users, expected_weights):
+    """Criterio US-7: Verificar cada rango de ponderación según cantidad de usuarios"""
+    weights = calculate_rebalancing_weights(total_users)
+    assert weights == expected_weights
+    # Invariante: la suma de ambos pesos siempre es exactamente 1.0
+    assert sum(weights) == pytest.approx(1.0)
+
+
+def test_calculate_rebalancing_weights_returns_float_tuple():
+    """Criterio US-7: Retorna Tuple[float, float]"""
+    weights = calculate_rebalancing_weights(150)
+    assert isinstance(weights, tuple)
+    assert len(weights) == 2
+    assert isinstance(weights[0], float)
+    assert isinstance(weights[1], float)
+
+
+def test_calculate_rebalancing_weights_negative_raises_value_error():
+    """Manejo de edge case: cantidad negativa de usuarios levanta ValueError"""
+    with pytest.raises(ValueError):
+        calculate_rebalancing_weights(-1)
