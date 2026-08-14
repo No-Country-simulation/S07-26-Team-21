@@ -6,15 +6,23 @@ Correr con: pytest tests/services/test_scoring_engine.py -v
 """
 
 from unittest.mock import AsyncMock, MagicMock
+import uuid
 import pytest
+from fastapi import HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.user_evaluation import UserEvaluation
+from app.schemas.benchmark_input import FacilitySizeEnum, RegionEnum
+from app.schemas.benchmark_output import BenchmarkResponse
 from app.services.scoring_engine import (
     calculate_dimension_percentile,
     calculate_dimension_score,
     calculate_rebalancing_weights,
+    generate_benchmark_response,
     get_main_weakness,
     _percentile_from_scores,
 )
+
 
 
 
@@ -263,3 +271,114 @@ def test_calculate_rebalancing_weights_negative_raises_value_error():
     """Manejo de edge case: cantidad negativa de usuarios levanta ValueError"""
     with pytest.raises(ValueError):
         calculate_rebalancing_weights(-1)
+
+
+# ─────────────────────────────────────────────────────────────
+# US-8: generate_benchmark_response (Integration Tests con BD Real)
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_generate_benchmark_response_integration(db: AsyncSession):
+    """
+    Integration test real (sin mocks) para US-8:
+    1. Inserta un UserEvaluation real en la BD.
+    2. Ejecuta generate_benchmark_response(evaluation_id, db).
+    3. Verifica que retorne una instancia exacta de BenchmarkResponse.
+    4. Comprueba que el objeto se serializa a JSON con model_dump_json().
+    """
+    eval_id = uuid.uuid4()
+    test_user = UserEvaluation(
+        evaluation_id=eval_id,
+        facility_size=FacilitySizeEnum.MEDIUM.value,
+        facility_type="colocation",
+        region=RegionEnum.LATAM.value,
+        # 15 preguntas Likert (1-5)
+        p1_visibilidad_herramientas=4,
+        p2_visibilidad_dashboards=3,
+        p3_visibilidad_telemetry=5,
+        p4_friccion_energia=2,
+        p5_friccion_cooling=2,
+        p6_latencia_manual=3,
+        p7_latencia_semi_auto=4,
+        p8_latencia_full_auto=3,
+        p9_auto_cuant_pue=4,
+        p10_auto_cuant_utilizacion=5,
+        p11_bloqueantes_staffing=1,
+        p12_bloqueantes_supply=2,
+        p13_bloqueantes_energy=1,
+        p14_bloqueantes_regulacion=2,
+        p15_bloqueantes_expertise=1,
+    )
+
+    db.add(test_user)
+    await db.commit()
+    await db.refresh(test_user)
+
+    try:
+        # Llamar a la función orquestadora
+        response = await generate_benchmark_response(test_user.evaluation_id, db)
+
+        # 1. Verificar tipo exacto
+        assert isinstance(response, BenchmarkResponse)
+
+        # 2. Verificar datos de contexto
+        assert response.evaluation_id == test_user.evaluation_id
+        assert response.user_context.facility_size == FacilitySizeEnum.MEDIUM
+        assert response.user_context.region == RegionEnum.LATAM
+
+        # 3. Verificar estructura de scores likert (5 sub-scores float)
+        assert isinstance(response.scores_likert.visibilidad, float)
+        assert isinstance(response.scores_likert.friccion, float)
+        assert isinstance(response.scores_likert.latencia, float)
+        assert isinstance(response.scores_likert.auto_cuantificacion, float)
+        assert isinstance(response.scores_likert.bloqueantes, float)
+
+        # 4. Verificar estructura de percentiles (int 0-100)
+        assert 0 <= response.percentiles.visibilidad <= 100
+        assert 0 <= response.percentiles.friccion <= 100
+        assert 0 <= response.percentiles.latencia <= 100
+        assert 0 <= response.percentiles.auto_cuantificacion <= 100
+        assert 0 <= response.percentiles.bloqueantes <= 100
+        assert 0 <= response.percentiles.general <= 100
+
+        # 5. Verificar debilidad principal
+        assert isinstance(response.main_weakness, str)
+        assert response.main_weakness in [
+            "visibilidad",
+            "latencia",
+            "friccion",
+            "auto_cuantificacion",
+            "bloqueantes",
+        ]
+
+        # 6. Verificar rebalanceo
+        assert isinstance(response.rebalancing_status.weight_public, float)
+        assert isinstance(response.rebalancing_status.weight_private, float)
+        assert response.rebalancing_status.weight_public + response.rebalancing_status.weight_private == pytest.approx(1.0)
+
+        # 7. Verificar serialización JSON completa
+        json_output = response.model_dump_json()
+        assert isinstance(json_output, str)
+        assert len(json_output) > 0
+        assert str(test_user.evaluation_id) in json_output
+        assert "scores_likert" in json_output
+        assert "percentiles" in json_output
+        assert "main_weakness" in json_output
+        assert "rebalancing_status" in json_output
+    finally:
+        # Limpieza del registro de prueba
+        await db.delete(test_user)
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_generate_benchmark_response_not_found_raises_404(db: AsyncSession):
+    """
+    Verifica que buscar una evaluación con un UUID inexistente levante HTTPException con código 404.
+    """
+    random_id = uuid.uuid4()
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_benchmark_response(random_id, db)
+
+    assert exc_info.value.status_code == 404
+    assert str(random_id) in exc_info.value.detail
