@@ -13,18 +13,27 @@ Flujo:
     6. process_evaluation()        → Orquesta todo y persiste en BD
     7. build_result_response()     → Construye el JSON de respuesta para React
     8. calculate_dimension_score() → US-4: promedio puro de una lista (sin BD)
+
+    ✅ RESUELTO: BenchmarkSubmitSchema usa nombres LARGOS de campo
+   (p1_visibilidad_herramientas, ...), confirmado con el equipo.
+ 
+    ✅ RESUELTO: identify_main_weakness() ahora devuelve un string simple
+   (no un objeto MainWeaknessSchema), para alinearse con
+   BenchmarkResponse.main_weakness de la US-2.
 """
+
+
 
 from typing import List
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.industry_benchmark import IndustryBenchmark
 from app.models.user_evaluation import UserEvaluation
 from app.schemas.benchmark_input import BenchmarkSubmitSchema
 from app.schemas.benchmark_output import (
     BenchmarkResultSchema,
-    MainWeaknessSchema,
 )
 
 
@@ -147,6 +156,102 @@ def normalize_score(likert_avg: float) -> float:
         - Likert 5.0 → 100.0
     """
     return round(((likert_avg - 1) / 4) * 100, 1)
+
+
+# ─────────────────────────────────────────────────────────────
+# US-5: Percentil Count-Based de UNA dimensión (públicos + privados)
+# ─────────────────────────────────────────────────────────────
+ 
+def _percentile_from_scores(user_score: float, all_scores: list[float]) -> int:
+    """
+    Calcula el percentil de `user_score` dentro de una lista combinada de scores de referencia (benchmarks públicos + evaluaciones privadas), usando el algoritmo count-based:
+ 
+        Percentil = (cantidad de scores < user_score / total) × 100
+ 
+    Función pura: no accede a la base de datos. Se separó para poder testear el algoritmo de percentil sin tener que mockear una
+    sesión async — mismo patrón que calculate_dimension_score en la US-4 (una función pura y testeada, con la función async delegando en ella).
+ 
+    Args:
+        user_score: score Likert (1.0-5.0) de la evaluación a ubicar.
+        all_scores: todos los scores de referencia (públicos + privados) de esa dimensión.
+ 
+    Returns:
+        Percentil entero en [0, 100]. Si `all_scores` está vacía,
+        retorna 50 (posición media por defecto — edge case sin datos).
+ 
+    Ejemplo:
+        >>> _percentile_from_scores(3, [1, 1, 1, 3, 3, 3, 5, 5, 5])
+        33
+    """
+    total = len(all_scores)
+    if total == 0:
+        return 50
+ 
+    lower_count = sum(1 for score in all_scores if score < user_score)
+    return round((lower_count / total) * 100)
+ 
+ 
+async def calculate_dimension_percentile(
+    dimension: str,
+    user_score: float,
+    db: AsyncSession,
+) -> int:
+    """
+    Calcula el percentil de un score de usuario dentro de UNA dimensión,
+    comparándolo contra:
+        1. Los benchmarks públicos de industry_benchmarks para esa
+           dimensión (niveles Likert 1, 3 y 5 de cada fuente).
+        2. Los scores privados de evaluaciones previas de otros
+           usuarios en user_evaluations.
+ 
+    El cálculo del percentil en sí (contar + dividir) se delega en
+    _percentile_from_scores(), que es pura y está testeada aparte.
+ 
+    Args:
+        dimension: clave de la dimensión ("visibilidad", "friccion",
+            "latencia", "auto_cuantificacion" o "bloqueantes").
+        user_score: score Likert promedio (1.0-5.0) del usuario en
+            esa dimensión.
+        db: sesión async de SQLAlchemy.
+ 
+    Returns:
+        Percentil entero en [0, 100]. Si no hay ningún score de
+        referencia (ni público ni privado), retorna 50 por defecto.
+ 
+    Raises:
+        ValueError: si `dimension` no es una clave válida.
+ 
+    Ejemplo:
+        Con 35 benchmarks públicos (1,3,5 por fuente) y 1 evaluación
+        privada previa en 2.67 para "latencia", un usuario con
+        score 2.67 en esa dimensión obtiene ~32% de percentil.
+    """
+    if dimension not in SCORE_COLUMNS:
+        raise ValueError(f"Dimensión desconocida: {dimension!r}")
+ 
+    # 1. Benchmarks públicos: 3 niveles Likert por cada fuente de la dimensión
+    public_result = await db.execute(
+        select(
+            IndustryBenchmark.level_1_likert_equivalent,
+            IndustryBenchmark.level_3_likert_equivalent,
+            IndustryBenchmark.level_5_likert_equivalent,
+        ).where(IndustryBenchmark.dimension == dimension)
+    )
+    public_scores: list[float] = [
+        level for row in public_result.all() for level in row
+    ]
+ 
+    # 2. Scores privados: evaluaciones previas de usuarios reales
+    score_col = SCORE_COLUMNS[dimension]
+    private_result = await db.execute(
+        select(score_col).where(score_col.isnot(None))
+    )
+    private_scores: list[float] = [row[0] for row in private_result.all()]
+ 
+    # 3-5. Combinar públicos + privados y calcular percentil
+    return _percentile_from_scores(user_score, public_scores + private_scores)
+ 
+
 
 
 # ─────────────────────────────────────────────────────────────
