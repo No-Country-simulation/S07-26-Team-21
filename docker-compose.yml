@@ -12,9 +12,10 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - benchmark_postgres_data:/var/lib/postgresql/data
       # Si querés que los scripts SQL se corran solos al levantar, descomentá esto:
       # - ./database/production:/docker-entrypoint-initdb.d
 
 volumes:
-  postgres_data:
+  benchmark_postgres_data:
+

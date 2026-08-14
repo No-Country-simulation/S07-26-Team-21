@@ -25,7 +25,9 @@ Flujo:
 
 
 from typing import List
+from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,8 +35,14 @@ from app.models.industry_benchmark import IndustryBenchmark
 from app.models.user_evaluation import UserEvaluation
 from app.schemas.benchmark_input import BenchmarkSubmitSchema
 from app.schemas.benchmark_output import (
+    BenchmarkResponse,
     BenchmarkResultSchema,
+    PercentilesResponse,
+    RebalancingStatusResponse,
+    ScoresLikertResponse,
+    UserContextResponse,
 )
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -615,4 +623,116 @@ def calculate_rebalancing_weights(total_users: int) -> tuple[float, float]:
         return (0.4, 0.6)
     else:
         return (0.2, 0.8)
+
+
+# ─────────────────────────────────────────────────────────────
+# US-8 / Sección 9: Orquestación del Flujo Completo
+# ─────────────────────────────────────────────────────────────
+
+async def generate_benchmark_response(
+    evaluation_id: UUID,
+    db: AsyncSession,
+) -> BenchmarkResponse:
+    """
+    US-8: Coordina todo el flujo de cálculo del benchmark a partir del ID de evaluación
+    y genera el BenchmarkResponse tipado listo para el consumo del frontend.
+
+    Flujo:
+        1. Trae la evaluación de la base de datos (404 si no existe).
+        2. Agrupa y calcula los 5 sub-scores Likert (US-4).
+        3. Calcula los percentiles dimensionales y el percentil general (US-5).
+        4. Identifica la debilidad principal respetando la jerarquía de desempate (US-6).
+        5. Cuenta los usuarios en BD y calcula los pesos de rebalanceo (US-7).
+        6. Construye y retorna la instancia de BenchmarkResponse (US-2).
+
+    Args:
+        evaluation_id: Identificador UUID de la evaluación a procesar.
+        db: Sesión asíncrona de base de datos SQLAlchemy.
+
+    Returns:
+        Instancia de BenchmarkResponse serializable a JSON.
+
+    Raises:
+        HTTPException: 404 si la evaluación no existe.
+    """
+    # 1. Traer la evaluación del usuario
+    result = await db.execute(
+        select(UserEvaluation).where(UserEvaluation.evaluation_id == evaluation_id)
+    )
+    evaluation = result.scalar_one_or_none()
+
+    if not evaluation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Evaluación con ID {evaluation_id} no encontrada.",
+        )
+
+    # 2. Calcular los 5 sub-scores por dimensión (US-4)
+    scores: dict[str, float] = {}
+    for dimension, questions in DIMENSION_QUESTIONS.items():
+        cached_score = getattr(evaluation, f"score_{dimension}", None)
+        if cached_score is not None:
+            scores[dimension] = float(cached_score)
+        else:
+            values = [getattr(evaluation, q) for q in questions]
+            scores[dimension] = round(calculate_dimension_score(values), 2)
+
+    # 3. Calcular los 5 percentiles dimensionales (US-5)
+    percentiles: dict[str, int] = {}
+    for dimension in DIMENSION_QUESTIONS:
+        cached_pct = getattr(evaluation, f"percentile_{dimension}", None)
+        if cached_pct is not None:
+            percentiles[dimension] = int(cached_pct)
+        else:
+            user_score = scores[dimension]
+            pct = await calculate_dimension_percentile(dimension, user_score, db)
+            percentiles[dimension] = pct
+
+    # Percentil general
+    cached_general = getattr(evaluation, "percentile_general", None)
+    if cached_general is not None:
+        percentiles["general"] = int(cached_general)
+    else:
+        avg_pct = sum(percentiles[dim] for dim in DIMENSION_QUESTIONS) / len(DIMENSION_QUESTIONS)
+        percentiles["general"] = round(avg_pct)
+
+    # 4. Identificar la debilidad principal (US-6)
+    main_weakness_dim = get_main_weakness(percentiles)
+
+    # 5. Contar el total de usuarios en BD y calcular rebalanceo bayesiano (US-7)
+    total_users_result = await db.execute(
+        select(func.count(UserEvaluation.evaluation_id))
+    )
+    total_users = total_users_result.scalar() or 0
+    weight_pub, weight_priv = calculate_rebalancing_weights(total_users)
+
+    # 6. Construir BenchmarkResponse fuertemente tipado (US-2)
+    return BenchmarkResponse(
+        evaluation_id=evaluation.evaluation_id,
+        user_context=UserContextResponse(
+            facility_size=evaluation.facility_size,
+            region=evaluation.region,
+        ),
+        scores_likert=ScoresLikertResponse(
+            visibilidad=scores["visibilidad"],
+            friccion=scores["friccion"],
+            latencia=scores["latencia"],
+            auto_cuantificacion=scores["auto_cuantificacion"],
+            bloqueantes=scores["bloqueantes"],
+        ),
+        percentiles=PercentilesResponse(
+            visibilidad=percentiles["visibilidad"],
+            friccion=percentiles["friccion"],
+            latencia=percentiles["latencia"],
+            auto_cuantificacion=percentiles["auto_cuantificacion"],
+            bloqueantes=percentiles["bloqueantes"],
+            general=percentiles["general"],
+        ),
+        main_weakness=main_weakness_dim,
+        rebalancing_status=RebalancingStatusResponse(
+            weight_public=weight_pub,
+            weight_private=weight_priv,
+        ),
+    )
+
 
