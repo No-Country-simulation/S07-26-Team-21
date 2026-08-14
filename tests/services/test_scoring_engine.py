@@ -5,10 +5,15 @@ Unit tests para app/services/scoring_engine.py (US-4).
 Correr con: pytest tests/test_scoring_engine.py -v
 """
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from app.services.scoring_engine import calculate_dimension_score
-
+from app.services.scoring_engine import (
+    calculate_dimension_percentile,
+    calculate_dimension_score,
+    _percentile_from_scores,
+)
 
 def test_all_ones_returns_one():
     assert calculate_dimension_score([1, 1, 1]) == 1.0
@@ -36,3 +41,62 @@ def test_five_question_dimension():
 def test_empty_list_raises_value_error():
     with pytest.raises(ValueError):
         calculate_dimension_score([])
+
+
+
+# ─────────────────────────────────────────────────────────────
+# US-5: _percentile_from_scores (función pura, sin BD)
+# ─────────────────────────────────────────────────────────────
+ 
+def test_percentile_matches_us5_example():
+    # Ejemplo de la US-5: user_score=3 en [1,1,1,3,3,3,5,5,5] → 33%
+    assert _percentile_from_scores(3, [1, 1, 1, 3, 3, 3, 5, 5, 5]) == 33
+ 
+ 
+def test_percentile_empty_dataset_returns_fifty():
+    # Edge case: sin scores de referencia → 50 por defecto
+    assert _percentile_from_scores(3, []) == 50
+ 
+ 
+def test_percentile_all_scores_higher_returns_zero():
+    assert _percentile_from_scores(1, [2, 3, 4, 5]) == 0
+ 
+ 
+def test_percentile_all_scores_lower_returns_hundred():
+    assert _percentile_from_scores(5, [1, 2, 3, 4]) == 100
+ 
+ 
+# ─────────────────────────────────────────────────────────────
+# US-5: calculate_dimension_percentile (async, con sesión mockeada)
+# ─────────────────────────────────────────────────────────────
+ 
+@pytest.mark.asyncio
+async def test_calculate_dimension_percentile_combines_public_and_private():
+    """
+    Simula 1 benchmark público (niveles 1, 3, 5) + 1 score privado en 3.0
+    para la dimensión "latencia". user_score=3.0.
+ 
+    all_scores combinados = [1, 3, 5, 3.0] → total=4
+    Scores menores a 3.0: solo el 1 → 1/4 = 25%
+    """
+    public_result = MagicMock()
+    public_result.all.return_value = [(1, 3, 5)]
+ 
+    private_result = MagicMock()
+    private_result.all.return_value = [(3.0,)]
+ 
+    mock_db = AsyncMock()
+    mock_db.execute.side_effect = [public_result, private_result]
+ 
+    percentile = await calculate_dimension_percentile("latencia", 3.0, mock_db)
+ 
+    assert percentile == 25
+    assert mock_db.execute.call_count == 2
+ 
+ 
+@pytest.mark.asyncio
+async def test_calculate_dimension_percentile_invalid_dimension_raises():
+    mock_db = AsyncMock()
+    with pytest.raises(ValueError):
+        await calculate_dimension_percentile("dimension_inexistente", 3.0, mock_db)
+ 
