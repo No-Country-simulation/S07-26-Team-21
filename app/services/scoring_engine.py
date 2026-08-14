@@ -570,3 +570,49 @@ def build_result_response(evaluation: UserEvaluation) -> BenchmarkResultSchema:
         main_weakness=identify_main_weakness(scores, percentiles),
         recommendations=generate_recommendations(scores, percentiles),
     )
+
+
+
+# ─────────────────────────────────────────────────────────────
+# US-7 / Sección 8: Ponderación de Rebalanceo Bayesiano
+# ─────────────────────────────────────────────────────────────
+
+def calculate_rebalancing_weights(total_users: int) -> tuple[float, float]:
+    """
+    Pondera los benchmarks públicos vs privados según cuántos usuarios
+    acumula la base de datos (Rebalanceo Bayesiano).
+
+    Cuantos más usuarios privados, mayor peso se otorga a esos datos:
+        - <= 10 usuarios:  100% público (1.0),   0% privado (0.0)
+        - <= 50 usuarios:   80% público (0.8),  20% privado (0.2)
+        - <= 200 usuarios:  60% público (0.6),  40% privado (0.4)
+        - <= 500 usuarios:  40% público (0.4),  60% privado (0.6)
+        - > 500 usuarios:   20% público (0.2),  80% privado (0.8)
+
+    Args:
+        total_users: Cantidad total de usuarios/evaluaciones en BD.
+
+    Returns:
+        Tupla (weight_public, weight_private) que suman 1.0.
+
+    Raises:
+        ValueError: Si total_users es un número negativo.
+
+    Ejemplo:
+        >>> calculate_rebalancing_weights(150)
+        (0.6, 0.4)
+    """
+    if total_users < 0:
+        raise ValueError("total_users no puede ser un número negativo.")
+
+    if total_users <= 10:
+        return (1.0, 0.0)
+    elif total_users <= 50:
+        return (0.8, 0.2)
+    elif total_users <= 200:
+        return (0.6, 0.4)
+    elif total_users <= 500:
+        return (0.4, 0.6)
+    else:
+        return (0.2, 0.8)
+

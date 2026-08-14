@@ -11,9 +11,11 @@ import pytest
 from app.services.scoring_engine import (
     calculate_dimension_percentile,
     calculate_dimension_score,
+    calculate_rebalancing_weights,
     get_main_weakness,
     _percentile_from_scores,
 )
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -215,3 +217,49 @@ def test_get_main_weakness_ignores_general_key():
 def test_get_main_weakness_empty_raises_value_error():
     with pytest.raises(ValueError):
         get_main_weakness({})
+
+
+# ─────────────────────────────────────────────────────────────
+# US-7: calculate_rebalancing_weights (Ponderación Bayesiana)
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    "total_users, expected_weights",
+    [
+        (0, (1.0, 0.0)),
+        (5, (1.0, 0.0)),
+        (10, (1.0, 0.0)),
+        (11, (0.8, 0.2)),
+        (30, (0.8, 0.2)),
+        (50, (0.8, 0.2)),
+        (51, (0.6, 0.4)),
+        (150, (0.6, 0.4)),  # Criterio US-7: 150 usuarios → (0.6, 0.4)
+        (200, (0.6, 0.4)),
+        (201, (0.4, 0.6)),
+        (350, (0.4, 0.6)),
+        (500, (0.4, 0.6)),
+        (501, (0.2, 0.8)),
+        (1000, (0.2, 0.8)),
+    ],
+)
+def test_calculate_rebalancing_weights_ranges(total_users, expected_weights):
+    """Criterio US-7: Verificar cada rango de ponderación según cantidad de usuarios"""
+    weights = calculate_rebalancing_weights(total_users)
+    assert weights == expected_weights
+    # Invariante: la suma de ambos pesos siempre es exactamente 1.0
+    assert sum(weights) == pytest.approx(1.0)
+
+
+def test_calculate_rebalancing_weights_returns_float_tuple():
+    """Criterio US-7: Retorna Tuple[float, float]"""
+    weights = calculate_rebalancing_weights(150)
+    assert isinstance(weights, tuple)
+    assert len(weights) == 2
+    assert isinstance(weights[0], float)
+    assert isinstance(weights[1], float)
+
+
+def test_calculate_rebalancing_weights_negative_raises_value_error():
+    """Manejo de edge case: cantidad negativa de usuarios levanta ValueError"""
+    with pytest.raises(ValueError):
+        calculate_rebalancing_weights(-1)
