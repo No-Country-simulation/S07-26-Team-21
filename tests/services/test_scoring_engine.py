@@ -372,13 +372,15 @@ async def test_generate_benchmark_response_integration(db: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_generate_benchmark_response_not_found_raises_404(db: AsyncSession):
+async def test_generate_benchmark_response_not_found_raises_evaluation_not_found_exception(db: AsyncSession):
     """
-    Verifica que buscar una evaluación con un UUID inexistente levante HTTPException con código 404.
+    Verifica que buscar una evaluación con un UUID inexistente levante EvaluationNotFoundException.
     """
+    from app.exceptions import EvaluationNotFoundException
+
     random_id = uuid.uuid4()
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(EvaluationNotFoundException) as exc_info:
         await generate_benchmark_response(random_id, db)
 
-    assert exc_info.value.status_code == 404
-    assert str(random_id) in exc_info.value.detail
+    assert str(random_id) in exc_info.value.detail
+
