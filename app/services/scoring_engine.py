@@ -23,8 +23,10 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.exceptions import EvaluationNotFoundException
 from app.models.industry_benchmark import IndustryBenchmark
 from app.models.user_evaluation import UserEvaluation
+
 from app.schemas.benchmark_input import BenchmarkSubmitSchema
 from app.schemas.benchmark_output import (
     BenchmarkResponse,
@@ -635,10 +637,8 @@ async def generate_benchmark_response(
     evaluation = result.scalar_one_or_none()
 
     if not evaluation:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Evaluación con ID {evaluation_id} no encontrada.",
-        )
+        raise EvaluationNotFoundException(evaluation_id)
+
 
     # 2. Calcular los 5 sub-scores por dimensión (US-4)
     scores: dict[str, float] = {}
