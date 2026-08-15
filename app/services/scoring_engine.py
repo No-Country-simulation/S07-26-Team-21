@@ -1,28 +1,20 @@
 """
 Motor de Scoring – BENCHMARK·DC Engine
 =======================================
-Calcula scores por dimensión, percentiles relativos a la industria,
-identifica la debilidad principal y genera recomendaciones.
+Calcula scores por dimensión, percentiles count-based relativos a la industria,
+identifica la debilidad principal con jerarquía de causa raíz y calcula el
+rebalanceo dinámico bayesiano.
 
-Flujo:
-    1. compute_dimension_scores()  → Promedio Likert por dimensión (1.0 – 5.0)
-    2. normalize_score()           → Escala 0-100 para visualización
-    3. compute_percentiles()       → Posición relativa vs. evaluaciones previas
-    4. identify_main_weakness()    → Dimensión con menor percentil
-    5. generate_recommendations()  → Recomendaciones priorizadas
-    6. process_evaluation()        → Orquesta todo y persiste en BD
-    7. build_result_response()     → Construye el JSON de respuesta para React
-    8. calculate_dimension_score() → US-4: promedio puro de una lista (sin BD)
-
-    ✅ RESUELTO: BenchmarkSubmitSchema usa nombres LARGOS de campo
-   (p1_visibilidad_herramientas, ...), confirmado con el equipo.
- 
-    ✅ RESUELTO: identify_main_weakness() ahora devuelve un string simple
-   (no un objeto MainWeaknessSchema), para alinearse con
-   BenchmarkResponse.main_weakness de la US-2.
+Arquitectura y Componentes:
+    - calculate_dimension_score()    → US-4: Promedio aritmético puro Likert (1.0 – 5.0).
+    - calculate_dimension_percentile()→ US-5: Percentil count-based combinando 105 niveles
+                                      públicos + evaluaciones privadas de la BD.
+    - get_main_weakness()            → US-6: Dimensión con menor percentil con desempate
+                                      (visibilidad > latencia > friccion > auto_cuant > bloqueantes).
+    - calculate_rebalancing_weights()→ US-7: Ponderación de pesos dataset público vs privado.
+    - generate_benchmark_response()  → US-8: Orquestador asíncrono completo que genera
+                                      el BenchmarkResponse (US-2) tipado.
 """
-
-
 
 from typing import List
 from uuid import UUID
@@ -271,52 +263,19 @@ async def compute_percentiles(
     scores: dict[str, float],
 ) -> dict[str, int]:
     """
-    Calcula el percentil de cada dimensión comparando con todas las
-    evaluaciones previas almacenadas en la base de datos.
-
-    Fórmula:
-        Percentil = (evaluaciones con score menor / total) × 100
-
-    Si no hay evaluaciones previas (primera evaluación), se asigna
-    percentil 50 como posición media de referencia.
+    Calcula los percentiles para las 5 dimensiones y el percentil general,
+    combinando benchmarks públicos de la industria y evaluaciones privadas
+    mediante `calculate_dimension_percentile` (US-5).
     """
     percentiles: dict[str, int] = {}
+    for dim in DIMENSION_QUESTIONS:
+        user_score = scores.get(dim, 3.0)
+        percentiles[dim] = await calculate_dimension_percentile(dim, user_score, session)
 
-    # Contar evaluaciones previas que ya tienen scores calculados
-    total_result = await session.execute(
-        select(func.count(UserEvaluation.evaluation_id)).where(
-            UserEvaluation.score_visibilidad.isnot(None)
-        )
-    )
-    total = total_result.scalar() or 0
-
-    if total == 0:
-        # Primera evaluación: percentil 50 por defecto en todas las dimensiones
-        for dim in DIMENSION_QUESTIONS:
-            percentiles[dim] = 50
-        percentiles["general"] = 50
-        return percentiles
-
-    # Calcular percentil por dimensión
-    for dim, score_col in SCORE_COLUMNS.items():
-        user_score = scores[dim]
-
-        # Contar cuántas evaluaciones tienen un score MENOR al del usuario
-        lower_result = await session.execute(
-            select(func.count(UserEvaluation.evaluation_id)).where(
-                score_col < user_score,
-                score_col.isnot(None),
-            )
-        )
-        lower_count = lower_result.scalar() or 0
-
-        percentiles[dim] = round((lower_count / total) * 100)
-
-    # Percentil general: promedio de los percentiles dimensionales
     avg_percentile = sum(percentiles.values()) / len(percentiles)
     percentiles["general"] = round(avg_percentile)
-
     return percentiles
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -541,43 +500,57 @@ async def process_evaluation(
 # 7. Construir Respuesta JSON para el Frontend
 # ─────────────────────────────────────────────────────────────
 
-def build_result_response(evaluation: UserEvaluation) -> BenchmarkResultSchema:
+def build_result_response(evaluation: UserEvaluation) -> BenchmarkResponse:
     """
-    Transforma un UserEvaluation persistido en el schema de respuesta
-    que consume el dashboard React.
-
-    Incluye: scores, percentiles, debilidad principal y recomendaciones.
+    Transforma un UserEvaluation persistido en el schema oficial BenchmarkResponse (US-2).
     """
     scores = {
-        "visibilidad": evaluation.score_visibilidad,
-        "friccion": evaluation.score_friccion,
-        "latencia": evaluation.score_latencia,
-        "auto_cuantificacion": evaluation.score_auto_cuantificacion,
-        "bloqueantes": evaluation.score_bloqueantes,
+        "visibilidad": float(evaluation.score_visibilidad or 0.0),
+        "friccion": float(evaluation.score_friccion or 0.0),
+        "latencia": float(evaluation.score_latencia or 0.0),
+        "auto_cuantificacion": float(evaluation.score_auto_cuantificacion or 0.0),
+        "bloqueantes": float(evaluation.score_bloqueantes or 0.0),
     }
 
     percentiles = {
-        "visibilidad": evaluation.percentile_visibilidad,
-        "friccion": evaluation.percentile_friccion,
-        "latencia": evaluation.percentile_latencia,
-        "auto_cuantificacion": evaluation.percentile_auto_cuantificacion,
-        "bloqueantes": evaluation.percentile_bloqueantes,
-        "general": evaluation.percentile_general,
+        "visibilidad": int(evaluation.percentile_visibilidad or 50),
+        "friccion": int(evaluation.percentile_friccion or 50),
+        "latencia": int(evaluation.percentile_latencia or 50),
+        "auto_cuantificacion": int(evaluation.percentile_auto_cuantificacion or 50),
+        "bloqueantes": int(evaluation.percentile_bloqueantes or 50),
+        "general": int(evaluation.percentile_general or 50),
     }
 
-    return BenchmarkResultSchema(
+    main_weakness_dim = get_main_weakness(percentiles)
+
+    return BenchmarkResponse(
         evaluation_id=evaluation.evaluation_id,
-        created_at=evaluation.created_at,
-        user_context={
-            "facility_size": evaluation.facility_size,
-            "facility_type": evaluation.facility_type,
-            "region": evaluation.region,
-        },
-        scores_likert=scores,
-        percentiles=percentiles,
-        main_weakness=identify_main_weakness(scores, percentiles),
-        recommendations=generate_recommendations(scores, percentiles),
+        user_context=UserContextResponse(
+            facility_size=evaluation.facility_size,
+            region=evaluation.region,
+        ),
+        scores_likert=ScoresLikertResponse(
+            visibilidad=scores["visibilidad"],
+            friccion=scores["friccion"],
+            latencia=scores["latencia"],
+            auto_cuantificacion=scores["auto_cuantificacion"],
+            bloqueantes=scores["bloqueantes"],
+        ),
+        percentiles=PercentilesResponse(
+            visibilidad=percentiles["visibilidad"],
+            friccion=percentiles["friccion"],
+            latencia=percentiles["latencia"],
+            auto_cuantificacion=percentiles["auto_cuantificacion"],
+            bloqueantes=percentiles["bloqueantes"],
+            general=percentiles["general"],
+        ),
+        main_weakness=main_weakness_dim,
+        rebalancing_status=RebalancingStatusResponse(
+            weight_public=1.0,
+            weight_private=0.0,
+        ),
     )
+
 
 
 
