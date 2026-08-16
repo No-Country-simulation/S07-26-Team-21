@@ -1,6 +1,6 @@
 import uuid
 from datetime import date
-from sqlalchemy import CheckConstraint, String, Integer, Float, Date
+from sqlalchemy import CheckConstraint, String, Integer, Float, Date, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
@@ -76,7 +76,10 @@ class UserEvaluation(Base):
         CheckConstraint(
             "p15_bloqueantes_expertise BETWEEN 1 AND 5", name="ck_p15_range"
         ),
+        # Índice compuesto para optimizar consultas de peers por cohorte
+        Index("ix_user_evaluations_size_region", "facility_size", "region"),
     )
+
 
     # UUID v4: Garantiza aleatoriedad total (No estático/incremental)
     evaluation_id: Mapped[uuid.UUID] = mapped_column(
