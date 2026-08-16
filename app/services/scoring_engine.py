@@ -16,8 +16,9 @@ Arquitectura y Componentes:
                                       el BenchmarkResponse (US-2) tipado.
 """
 
-from typing import List
+from typing import Any, List
 from uuid import UUID
+
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, func
@@ -123,25 +124,42 @@ def calculate_dimension_score(p_list: List[int]) -> float:
  
     return sum(p_list) / len(p_list)
 
-# ─────────────────────────────────────────────────────────────
-# 1. Calcular Scores Likert por Dimensión
-# ─────────────────────────────────────────────────────────────
+SHORT_DIMENSION_QUESTIONS: dict[str, list[str]] = {
+    "visibilidad": ["p1", "p2", "p3"],
+    "friccion": ["p4", "p5"],
+    "latencia": ["p6", "p7", "p8"],
+    "auto_cuantificacion": ["p9", "p10"],
+    "bloqueantes": ["p11", "p12", "p13", "p14", "p15"],
+}
 
-def compute_dimension_scores(data: BenchmarkSubmitSchema) -> dict[str, float]:
+
+def compute_dimension_scores(data: Any) -> dict[str, float]:
     """
     Calcula el promedio Likert (1.0 – 5.0) de cada dimensión.
-
-    Ejemplo:
-        Si p1=4, p2=3, p3=5 → visibilidad = (4+3+5)/3 = 4.0
+    Soporta BenchmarkRequest (p1..p15) o diccionarios/modelos con nombres largos.
     """
-    data_dict = data.model_dump()
+    if hasattr(data, "model_dump"):
+        data_dict = data.model_dump()
+    elif isinstance(data, dict):
+        data_dict = data
+    else:
+        data_dict = vars(data)
+
     scores: dict[str, float] = {}
 
-    for dimension, questions in DIMENSION_QUESTIONS.items():
-        values = [data_dict[q] for q in questions]
+    for dimension, long_questions in DIMENSION_QUESTIONS.items():
+        short_questions = SHORT_DIMENSION_QUESTIONS[dimension]
+        if all(q in data_dict for q in short_questions):
+            values = [data_dict[q] for q in short_questions]
+        elif all(q in data_dict for q in long_questions):
+            values = [data_dict[q] for q in long_questions]
+        else:
+            values = [data_dict.get(q, data_dict.get(sq, 3)) for q, sq in zip(long_questions, short_questions)]
+
         scores[dimension] = round(calculate_dimension_score(values), 2)
 
     return scores
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -461,21 +479,22 @@ async def process_evaluation(
         facility_type=data.facility_type,
         region=data.region,
         # 15 respuestas Likert originales
-        p1_visibilidad_herramientas=data.p1_visibilidad_herramientas,
-        p2_visibilidad_dashboards=data.p2_visibilidad_dashboards,
-        p3_visibilidad_telemetry=data.p3_visibilidad_telemetry,
-        p4_friccion_energia=data.p4_friccion_energia,
-        p5_friccion_cooling=data.p5_friccion_cooling,
-        p6_latencia_manual=data.p6_latencia_manual,
-        p7_latencia_semi_auto=data.p7_latencia_semi_auto,
-        p8_latencia_full_auto=data.p8_latencia_full_auto,
-        p9_auto_cuant_pue=data.p9_auto_cuant_pue,
-        p10_auto_cuant_utilizacion=data.p10_auto_cuant_utilizacion,
-        p11_bloqueantes_staffing=data.p11_bloqueantes_staffing,
-        p12_bloqueantes_supply=data.p12_bloqueantes_supply,
-        p13_bloqueantes_energy=data.p13_bloqueantes_energy,
-        p14_bloqueantes_regulacion=data.p14_bloqueantes_regulacion,
-        p15_bloqueantes_expertise=data.p15_bloqueantes_expertise,
+        p1_visibilidad_herramientas=getattr(data, "p1_visibilidad_herramientas", getattr(data, "p1", 3)),
+        p2_visibilidad_dashboards=getattr(data, "p2_visibilidad_dashboards", getattr(data, "p2", 3)),
+        p3_visibilidad_telemetry=getattr(data, "p3_visibilidad_telemetry", getattr(data, "p3", 3)),
+        p4_friccion_energia=getattr(data, "p4_friccion_energia", getattr(data, "p4", 3)),
+        p5_friccion_cooling=getattr(data, "p5_friccion_cooling", getattr(data, "p5", 3)),
+        p6_latencia_manual=getattr(data, "p6_latencia_manual", getattr(data, "p6", 3)),
+        p7_latencia_semi_auto=getattr(data, "p7_latencia_semi_auto", getattr(data, "p7", 3)),
+        p8_latencia_full_auto=getattr(data, "p8_latencia_full_auto", getattr(data, "p8", 3)),
+        p9_auto_cuant_pue=getattr(data, "p9_auto_cuant_pue", getattr(data, "p9", 3)),
+        p10_auto_cuant_utilizacion=getattr(data, "p10_auto_cuant_utilizacion", getattr(data, "p10", 3)),
+        p11_bloqueantes_staffing=getattr(data, "p11_bloqueantes_staffing", getattr(data, "p11", 3)),
+        p12_bloqueantes_supply=getattr(data, "p12_bloqueantes_supply", getattr(data, "p12", 3)),
+        p13_bloqueantes_energy=getattr(data, "p13_bloqueantes_energy", getattr(data, "p13", 3)),
+        p14_bloqueantes_regulacion=getattr(data, "p14_bloqueantes_regulacion", getattr(data, "p14", 3)),
+        p15_bloqueantes_expertise=getattr(data, "p15_bloqueantes_expertise", getattr(data, "p15", 3)),
+
         # Scores calculados (cacheados para no recalcular)
         score_visibilidad=scores["visibilidad"],
         score_friccion=scores["friccion"],
