@@ -1,6 +1,8 @@
+from datetime import datetime, timezone
 from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict
 from app.schemas.benchmark_input import FacilitySizeEnum, RegionEnum
+
 
 
 class UserContextResponse(BaseModel):
@@ -128,6 +130,26 @@ class MainWeaknessEnriched(BaseModel):
         return super().__eq__(other)
 
 
+class NarrativesResponse(BaseModel):
+    """
+    US-20: Narrativas contextuales generadas por IA para reportes y PDF.
+    """
+
+    weakness_explanation: str = Field(
+        ..., description="Explicación contextual de la debilidad principal"
+    )
+    top_quartile_practices: str = Field(
+        ..., description="Prácticas técnicas implementadas por el cuartil superior"
+    )
+    llm_generated: bool = Field(
+        default=False, description="Indica si la narrativa fue generada por IA o fallback"
+    )
+    generated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Marca de tiempo UTC de generación",
+    )
+
+
 class BenchmarkResponse(BaseModel):
     """
     Schema de Salida: Estructura uniforme retornada por el endpoint POST /submit y GET /results/{id}.
@@ -157,6 +179,11 @@ class BenchmarkResponse(BaseModel):
         default=None,
         description="Comparación relativa contra peers del mismo tamaño y región",
     )
+    narratives: NarrativesResponse | None = Field(
+        default=None,
+        description="Narrativas contextuales generadas por IA para reporte y PDF",
+    )
+
 
 
 
