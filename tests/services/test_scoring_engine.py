@@ -12,16 +12,29 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user_evaluation import UserEvaluation
-from app.schemas.benchmark_input import FacilitySizeEnum, RegionEnum
+from app.schemas.benchmark_input import (
+    BenchmarkSubmitSchema,
+    FacilitySizeEnum,
+    RegionEnum,
+)
 from app.schemas.benchmark_output import BenchmarkResponse
 from app.services.scoring_engine import (
+    build_result_response,
     calculate_dimension_percentile,
     calculate_dimension_score,
     calculate_rebalancing_weights,
+    compute_dimension_scores,
+    compute_percentiles,
     generate_benchmark_response,
+    generate_recommendations,
     get_main_weakness,
+    identify_main_weakness,
+    normalize_score,
+    process_evaluation,
     _percentile_from_scores,
 )
+
+
 
 
 
@@ -383,4 +396,271 @@ async def test_generate_benchmark_response_not_found_raises_evaluation_not_found
         await generate_benchmark_response(random_id, db)
 
     assert str(random_id) in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_generate_benchmark_response_cached_scores_and_percentiles(db: AsyncSession):
+    """
+    Verifica que si la evaluación ya tiene scores y percentiles persistidos, se utilicen directamente.
+    """
+    test_user = UserEvaluation(
+        facility_size=FacilitySizeEnum.MEDIUM,
+        region=RegionEnum.LATAM,
+        p1_visibilidad_herramientas=4,
+        p2_visibilidad_dashboards=3,
+        p3_visibilidad_telemetry=5,
+        p4_friccion_energia=2,
+        p5_friccion_cooling=2,
+        p6_latencia_manual=3,
+        p7_latencia_semi_auto=4,
+        p8_latencia_full_auto=3,
+        p9_auto_cuant_pue=4,
+        p10_auto_cuant_utilizacion=5,
+        p11_bloqueantes_staffing=1,
+        p12_bloqueantes_supply=2,
+        p13_bloqueantes_energy=1,
+        p14_bloqueantes_regulacion=2,
+        p15_bloqueantes_expertise=1,
+        score_visibilidad=4.0,
+        score_friccion=2.0,
+        score_latencia=3.33,
+        score_auto_cuantificacion=4.5,
+        score_bloqueantes=1.4,
+        percentile_visibilidad=65,
+        percentile_friccion=40,
+        percentile_latencia=75,
+        percentile_auto_cuantificacion=85,
+        percentile_bloqueantes=25,
+        percentile_general=58,
+    )
+
+    db.add(test_user)
+    await db.commit()
+    await db.refresh(test_user)
+
+    try:
+        response = await generate_benchmark_response(test_user.evaluation_id, db)
+        assert response.scores_likert.visibilidad == 4.0
+        assert response.percentiles.visibilidad == 65
+        assert response.percentiles.general == 58
+        assert response.main_weakness == "bloqueantes"
+    finally:
+        await db.delete(test_user)
+        await db.commit()
+
+
+
+# ─────────────────────────────────────────────────────────────
+# normalize_score
+# ─────────────────────────────────────────────────────────────
+
+def test_normalize_score_boundaries_and_midpoints():
+    """
+    Verifica la conversión de escala Likert (1-5) a escala 0-100.
+    """
+    assert normalize_score(1.0) == 0.0
+    assert normalize_score(3.0) == 50.0
+    assert normalize_score(5.0) == 100.0
+    assert normalize_score(2.0) == 25.0
+    assert normalize_score(4.0) == 75.0
+
+
+# ─────────────────────────────────────────────────────────────
+# compute_dimension_scores
+# ─────────────────────────────────────────────────────────────
+
+def test_compute_dimension_scores_from_schema():
+    """
+    Verifica el cálculo de promedios para las 5 dimensiones desde BenchmarkSubmitSchema (p1..p15).
+    """
+    payload = BenchmarkSubmitSchema(
+        facility_size=FacilitySizeEnum.MEDIUM,
+        region=RegionEnum.LATAM,
+        p1=4,
+        p2=3,
+        p3=5,
+        p4=2,
+        p5=2,
+        p6=3,
+        p7=4,
+        p8=3,
+        p9=4,
+        p10=5,
+        p11=1,
+        p12=2,
+        p13=1,
+        p14=2,
+        p15=1,
+    )
+    scores = compute_dimension_scores(payload)
+    assert scores["visibilidad"] == 4.0
+    assert scores["friccion"] == 2.0
+    assert scores["latencia"] == 3.33
+    assert scores["auto_cuantificacion"] == 4.5
+    assert scores["bloqueantes"] == 1.4
+
+
+def test_compute_dimension_scores_from_dict_with_long_keys():
+    """
+    Verifica el cálculo de promedios pasando un diccionario con nombres de campos largos.
+    """
+    payload_dict = {
+        "p1_visibilidad_herramientas": 5,
+        "p2_visibilidad_dashboards": 5,
+        "p3_visibilidad_telemetry": 5,
+        "p4_friccion_energia": 4,
+        "p5_friccion_cooling": 4,
+        "p6_latencia_manual": 1,
+        "p7_latencia_semi_auto": 1,
+        "p8_latencia_full_auto": 1,
+        "p9_auto_cuant_pue": 3,
+        "p10_auto_cuant_utilizacion": 3,
+        "p11_bloqueantes_staffing": 2,
+        "p12_bloqueantes_supply": 2,
+        "p13_bloqueantes_energy": 2,
+        "p14_bloqueantes_regulacion": 2,
+        "p15_bloqueantes_expertise": 2,
+    }
+    scores = compute_dimension_scores(payload_dict)
+    assert scores["visibilidad"] == 5.0
+    assert scores["friccion"] == 4.0
+    assert scores["latencia"] == 1.0
+    assert scores["auto_cuantificacion"] == 3.0
+    assert scores["bloqueantes"] == 2.0
+
+
+# ─────────────────────────────────────────────────────────────
+# compute_percentiles (async)
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_compute_percentiles_iterates_all_dimensions():
+    """
+    Verifica el cálculo asíncrono de percentiles dimensionales y general.
+    """
+    mock_db = AsyncMock()
+    # Mock público: retorna 1 benchmark con (1, 3, 5) para cada dimensión
+    public_result = MagicMock()
+    public_result.all.return_value = [(1, 3, 5)]
+    # Mock privado: lista vacía
+    private_result = MagicMock()
+    private_result.all.return_value = []
+
+    mock_db.execute.side_effect = [public_result, private_result] * 5
+
+    scores = {
+        "visibilidad": 3.0,
+        "friccion": 3.0,
+        "latencia": 3.0,
+        "auto_cuantificacion": 3.0,
+        "bloqueantes": 3.0,
+    }
+    percentiles = await compute_percentiles(mock_db, scores)
+
+    assert "visibilidad" in percentiles
+    assert "friccion" in percentiles
+    assert "latencia" in percentiles
+    assert "auto_cuantificacion" in percentiles
+    assert "bloqueantes" in percentiles
+    assert "general" in percentiles
+    assert percentiles["general"] == 33
+
+
+# ─────────────────────────────────────────────────────────────
+# identify_main_weakness
+# ─────────────────────────────────────────────────────────────
+
+def test_identify_main_weakness_returns_string_or_none():
+    scores = {"visibilidad": 4.0, "latencia": 2.0, "friccion": 3.0, "auto_cuantificacion": 4.0, "bloqueantes": 3.0}
+    percentiles = {"visibilidad": 80, "latencia": 20, "friccion": 50, "auto_cuantificacion": 85, "bloqueantes": 40}
+    assert identify_main_weakness(scores, percentiles) == "latencia"
+
+    # Caso error -> retorna None
+    assert identify_main_weakness(scores, {}) is None
+
+
+# ─────────────────────────────────────────────────────────────
+# generate_recommendations
+# ─────────────────────────────────────────────────────────────
+
+def test_generate_recommendations_with_low_percentiles():
+    scores = {"visibilidad": 2.0, "latencia": 2.0, "friccion": 4.0, "auto_cuantificacion": 4.0, "bloqueantes": 4.0}
+    percentiles = {"visibilidad": 30, "latencia": 25, "friccion": 70, "auto_cuantificacion": 80, "bloqueantes": 75, "general": 56}
+    recs = generate_recommendations(scores, percentiles)
+    assert len(recs) > 0
+    assert any("Latencia" in r or "Visibilidad" in r for r in recs)
+
+
+def test_generate_recommendations_all_high_returns_positive_message():
+    scores = {"visibilidad": 4.5, "latencia": 4.5, "friccion": 4.5, "auto_cuantificacion": 4.5, "bloqueantes": 4.5}
+    percentiles = {"visibilidad": 90, "latencia": 90, "friccion": 90, "auto_cuantificacion": 90, "bloqueantes": 90, "general": 90}
+    recs = generate_recommendations(scores, percentiles)
+    assert len(recs) == 1
+    assert "Excelente" in recs[0]
+
+
+# ─────────────────────────────────────────────────────────────
+# build_result_response
+# ─────────────────────────────────────────────────────────────
+
+def test_build_result_response_constructs_valid_benchmark_response():
+    """
+    Verifica la transformación de UserEvaluation a BenchmarkResponse oficial.
+    """
+    eval_mock = UserEvaluation(
+        evaluation_id=uuid.uuid4(),
+        facility_size=FacilitySizeEnum.LARGE,
+        region=RegionEnum.USA,
+        facility_type="Enterprise",
+        score_visibilidad=4.0,
+        score_friccion=3.5,
+        score_latencia=2.0,
+        score_auto_cuantificacion=4.5,
+        score_bloqueantes=1.8,
+        percentile_visibilidad=70,
+        percentile_friccion=60,
+        percentile_latencia=25,
+        percentile_auto_cuantificacion=85,
+        percentile_bloqueantes=30,
+        percentile_general=54,
+    )
+    response = build_result_response(eval_mock)
+    assert isinstance(response, BenchmarkResponse)
+    assert response.evaluation_id == eval_mock.evaluation_id
+    assert response.main_weakness == "latencia"
+    assert response.user_context.facility_size == FacilitySizeEnum.LARGE
+    assert response.rebalancing_status.weight_public == 1.0
+
+
+# ─────────────────────────────────────────────────────────────
+# process_evaluation (async)
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_process_evaluation_persists_and_returns_evaluation():
+    """
+    Verifica que process_evaluation calcule scores/percentiles y persista en BD.
+    """
+    payload = BenchmarkSubmitSchema(
+        facility_size=FacilitySizeEnum.SMALL,
+        region=RegionEnum.EUROPE,
+        p1=3, p2=3, p3=3, p4=3, p5=3,
+        p6=3, p7=3, p8=3, p9=3, p10=3,
+        p11=3, p12=3, p13=3, p14=3, p15=3,
+    )
+    mock_session = AsyncMock()
+    # Mock para 5 llamadas a calculate_dimension_percentile (10 queries)
+    mock_session.execute.side_effect = [
+        MagicMock(all=MagicMock(return_value=[(1, 3, 5)])),
+        MagicMock(all=MagicMock(return_value=[])),
+    ] * 5
+
+    eval_result = await process_evaluation(mock_session, payload)
+    assert eval_result.facility_size == FacilitySizeEnum.SMALL
+    assert eval_result.score_visibilidad == 3.0
+    assert mock_session.add.called
+    assert mock_session.commit.called
+    assert mock_session.refresh.called
+
+
 

@@ -1,11 +1,19 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.28.0
-pydantic>=2.6.0
-pydantic-settings>=2.2.0
-sqlalchemy>=2.0.28
-asyncpg>=0.29.0
-greenlet>=3.0.3
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
-alembic>=1.19.0
-httpx>=0.27.0
+# Framework web y servidor ASGI
+fastapi>=0.110.0            # Framework moderno y de alto rendimiento para construir APIs en Python
+uvicorn[standard]>=0.28.0   # Servidor ASGI ultrarrápido para ejecutar y recargar la aplicación FastAPI
+
+# Validación de esquemas y configuración
+pydantic>=2.6.0             # Validación de tipos de datos, serialización JSON y schemas
+pydantic-settings>=2.2.0    # Gestión tipada de variables de entorno (.env)
+
+# Base de datos y ORM
+sqlalchemy>=2.0.28          # ORM y Toolkit SQL moderno (versión 2.0 con soporte asíncrono)
+asyncpg>=0.29.0             # Driver de conexión asíncrona de alto rendimiento para PostgreSQL
+greenlet>=3.0.3             # Soporte de corrutinas para operaciones asíncronas en SQLAlchemy
+alembic>=1.19.0             # Herramienta de control de versiones y migraciones de esquemas en PostgreSQL
+
+# Testing y Cobertura
+pytest>=8.0.0               # Framework principal para testing unitario y de integración
+pytest-asyncio>=0.23.0      # Extensión para ejecutar tests asíncronos (async/await) con pytest
+pytest-cov>=4.1.0           # Medición y reportes de cobertura de código para pytest
+httpx>=0.27.0               # Cliente HTTP asíncrono para tests E2E contra FastAPI (ASGITransport)

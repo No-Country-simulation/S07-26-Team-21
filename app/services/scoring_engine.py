@@ -16,8 +16,9 @@ Arquitectura y Componentes:
                                       el BenchmarkResponse (US-2) tipado.
 """
 
-from typing import List
+from typing import Any, List
 from uuid import UUID
+
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, func
@@ -26,16 +27,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.exceptions import EvaluationNotFoundException
 from app.models.industry_benchmark import IndustryBenchmark
 from app.models.user_evaluation import UserEvaluation
-
 from app.schemas.benchmark_input import BenchmarkSubmitSchema
+
+
 from app.schemas.benchmark_output import (
     BenchmarkResponse,
     BenchmarkResultSchema,
+    PeerComparison,
     PercentilesResponse,
     RebalancingStatusResponse,
     ScoresLikertResponse,
     UserContextResponse,
 )
+
 
 
 
@@ -123,25 +127,42 @@ def calculate_dimension_score(p_list: List[int]) -> float:
  
     return sum(p_list) / len(p_list)
 
-# ─────────────────────────────────────────────────────────────
-# 1. Calcular Scores Likert por Dimensión
-# ─────────────────────────────────────────────────────────────
+SHORT_DIMENSION_QUESTIONS: dict[str, list[str]] = {
+    "visibilidad": ["p1", "p2", "p3"],
+    "friccion": ["p4", "p5"],
+    "latencia": ["p6", "p7", "p8"],
+    "auto_cuantificacion": ["p9", "p10"],
+    "bloqueantes": ["p11", "p12", "p13", "p14", "p15"],
+}
 
-def compute_dimension_scores(data: BenchmarkSubmitSchema) -> dict[str, float]:
+
+def compute_dimension_scores(data: Any) -> dict[str, float]:
     """
     Calcula el promedio Likert (1.0 – 5.0) de cada dimensión.
-
-    Ejemplo:
-        Si p1=4, p2=3, p3=5 → visibilidad = (4+3+5)/3 = 4.0
+    Soporta BenchmarkRequest (p1..p15) o diccionarios/modelos con nombres largos.
     """
-    data_dict = data.model_dump()
+    if hasattr(data, "model_dump"):
+        data_dict = data.model_dump()
+    elif isinstance(data, dict):
+        data_dict = data
+    else:
+        data_dict = vars(data)
+
     scores: dict[str, float] = {}
 
-    for dimension, questions in DIMENSION_QUESTIONS.items():
-        values = [data_dict[q] for q in questions]
+    for dimension, long_questions in DIMENSION_QUESTIONS.items():
+        short_questions = SHORT_DIMENSION_QUESTIONS[dimension]
+        if all(q in data_dict for q in short_questions):
+            values = [data_dict[q] for q in short_questions]
+        elif all(q in data_dict for q in long_questions):
+            values = [data_dict[q] for q in long_questions]
+        else:
+            values = [data_dict.get(q, data_dict.get(sq, 3)) for q, sq in zip(long_questions, short_questions)]
+
         scores[dimension] = round(calculate_dimension_score(values), 2)
 
     return scores
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -461,21 +482,22 @@ async def process_evaluation(
         facility_type=data.facility_type,
         region=data.region,
         # 15 respuestas Likert originales
-        p1_visibilidad_herramientas=data.p1_visibilidad_herramientas,
-        p2_visibilidad_dashboards=data.p2_visibilidad_dashboards,
-        p3_visibilidad_telemetry=data.p3_visibilidad_telemetry,
-        p4_friccion_energia=data.p4_friccion_energia,
-        p5_friccion_cooling=data.p5_friccion_cooling,
-        p6_latencia_manual=data.p6_latencia_manual,
-        p7_latencia_semi_auto=data.p7_latencia_semi_auto,
-        p8_latencia_full_auto=data.p8_latencia_full_auto,
-        p9_auto_cuant_pue=data.p9_auto_cuant_pue,
-        p10_auto_cuant_utilizacion=data.p10_auto_cuant_utilizacion,
-        p11_bloqueantes_staffing=data.p11_bloqueantes_staffing,
-        p12_bloqueantes_supply=data.p12_bloqueantes_supply,
-        p13_bloqueantes_energy=data.p13_bloqueantes_energy,
-        p14_bloqueantes_regulacion=data.p14_bloqueantes_regulacion,
-        p15_bloqueantes_expertise=data.p15_bloqueantes_expertise,
+        p1_visibilidad_herramientas=getattr(data, "p1_visibilidad_herramientas", getattr(data, "p1", 3)),
+        p2_visibilidad_dashboards=getattr(data, "p2_visibilidad_dashboards", getattr(data, "p2", 3)),
+        p3_visibilidad_telemetry=getattr(data, "p3_visibilidad_telemetry", getattr(data, "p3", 3)),
+        p4_friccion_energia=getattr(data, "p4_friccion_energia", getattr(data, "p4", 3)),
+        p5_friccion_cooling=getattr(data, "p5_friccion_cooling", getattr(data, "p5", 3)),
+        p6_latencia_manual=getattr(data, "p6_latencia_manual", getattr(data, "p6", 3)),
+        p7_latencia_semi_auto=getattr(data, "p7_latencia_semi_auto", getattr(data, "p7", 3)),
+        p8_latencia_full_auto=getattr(data, "p8_latencia_full_auto", getattr(data, "p8", 3)),
+        p9_auto_cuant_pue=getattr(data, "p9_auto_cuant_pue", getattr(data, "p9", 3)),
+        p10_auto_cuant_utilizacion=getattr(data, "p10_auto_cuant_utilizacion", getattr(data, "p10", 3)),
+        p11_bloqueantes_staffing=getattr(data, "p11_bloqueantes_staffing", getattr(data, "p11", 3)),
+        p12_bloqueantes_supply=getattr(data, "p12_bloqueantes_supply", getattr(data, "p12", 3)),
+        p13_bloqueantes_energy=getattr(data, "p13_bloqueantes_energy", getattr(data, "p13", 3)),
+        p14_bloqueantes_regulacion=getattr(data, "p14_bloqueantes_regulacion", getattr(data, "p14", 3)),
+        p15_bloqueantes_expertise=getattr(data, "p15_bloqueantes_expertise", getattr(data, "p15", 3)),
+
         # Scores calculados (cacheados para no recalcular)
         score_visibilidad=scores["visibilidad"],
         score_friccion=scores["friccion"],
@@ -601,7 +623,109 @@ def calculate_rebalancing_weights(total_users: int) -> tuple[float, float]:
 
 
 # ─────────────────────────────────────────────────────────────
-# US-8 / Sección 9: Orquestación del Flujo Completo
+# US-17: get_peer_stats (Comparación Relativa contra Peers)
+# ─────────────────────────────────────────────────────────────
+
+async def get_peer_stats(
+    dimension: str,
+    facility_size: str | None,
+    region: str | None,
+    user_score: float,
+
+    db: AsyncSession,
+    current_evaluation_id: UUID | None = None,
+) -> PeerComparison:
+    """
+    US-17: Calcula la comparación relativa frente a peers del mismo tamaño y región.
+
+    Aplica K-anonimato para proteger la privacidad estadística:
+    - 0 peers: peers_count=0, métricas=None, disclaimer="No hay suficientes datos de peers"
+    - 1-2 peers: peers_count=N, métricas=None, disclaimer="Muestra insuficiente para garantizar el anonimato estadístico"
+    - 3-4 peers: peers_count=N, métricas calculadas, disclaimer="Muestra limitada"
+    - 5+ peers: peers_count=N, métricas calculadas, disclaimer=None
+    """
+    dim_key = dimension.lower()
+    if dim_key not in SCORE_COLUMNS:
+        raise ValueError(
+            f"Dimensión inválida: '{dimension}'. Dimensiones válidas: {list(SCORE_COLUMNS.keys())}"
+        )
+
+    # Si falta contexto de facility_size o region -> 0 peers
+    if not facility_size or not region:
+        return PeerComparison(
+            peers_count=0,
+            peer_average_score=None,
+            your_score=round(user_score, 2),
+            gap_vs_peers=None,
+            percentile_vs_peers=None,
+            disclaimer="No hay suficientes datos de peers",
+            message="No hay suficientes datos de peers",
+        )
+
+    # Convertir a string si es enum
+    f_size_val = facility_size.value if hasattr(facility_size, "value") else str(facility_size)
+    region_val = region.value if hasattr(region, "value") else str(region)
+
+    score_col = SCORE_COLUMNS[dim_key]
+
+    query = select(score_col).where(
+        UserEvaluation.facility_size == f_size_val,
+        UserEvaluation.region == region_val,
+        score_col.isnot(None),
+    )
+    if current_evaluation_id is not None:
+        query = query.where(UserEvaluation.evaluation_id != current_evaluation_id)
+
+    result = await db.execute(query)
+    peer_scores = [float(row[0]) for row in result.all()]
+    peers_count = len(peer_scores)
+
+    # 1. Caso 0 peers
+    if peers_count == 0:
+        return PeerComparison(
+            peers_count=0,
+            peer_average_score=None,
+            your_score=round(user_score, 2),
+            gap_vs_peers=None,
+            percentile_vs_peers=None,
+            disclaimer="No hay suficientes datos de peers",
+            message="No hay suficientes datos de peers",
+        )
+
+    # 2. Caso K-anonimato insuficiente (1 a 2 peers)
+    if peers_count < 3:
+        return PeerComparison(
+            peers_count=peers_count,
+            peer_average_score=None,
+            your_score=round(user_score, 2),
+            gap_vs_peers=None,
+            percentile_vs_peers=None,
+            disclaimer="Muestra insuficiente para garantizar el anonimato estadístico",
+            message="Muestra insuficiente para garantizar el anonimato estadístico",
+        )
+
+    # 3. Caso Muestra válida (>= 3 peers)
+    peer_avg = round(sum(peer_scores) / peers_count, 2)
+    gap = round(user_score - peer_avg, 2)
+    count_lower = sum(1 for s in peer_scores if s < user_score)
+    pct_peers = round((count_lower / peers_count) * 100)
+
+    # Disclaimer para muestra limitada (3 a 4 peers)
+    disclaimer = "Muestra limitada" if peers_count < 5 else None
+
+    return PeerComparison(
+        peers_count=peers_count,
+        peer_average_score=peer_avg,
+        your_score=round(user_score, 2),
+        gap_vs_peers=gap,
+        percentile_vs_peers=pct_peers,
+        disclaimer=disclaimer,
+        message=disclaimer,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# US-8: generate_benchmark_response (Orquestador Asíncrono)
 # ─────────────────────────────────────────────────────────────
 
 async def generate_benchmark_response(
@@ -609,36 +733,19 @@ async def generate_benchmark_response(
     db: AsyncSession,
 ) -> BenchmarkResponse:
     """
-    US-8: Coordina todo el flujo de cálculo del benchmark a partir del ID de evaluación
-    y genera el BenchmarkResponse tipado listo para el consumo del frontend.
-
-    Flujo:
-        1. Trae la evaluación de la base de datos (404 si no existe).
-        2. Agrupa y calcula los 5 sub-scores Likert (US-4).
-        3. Calcula los percentiles dimensionales y el percentil general (US-5).
-        4. Identifica la debilidad principal respetando la jerarquía de desempate (US-6).
-        5. Cuenta los usuarios en BD y calcula los pesos de rebalanceo (US-7).
-        6. Construye y retorna la instancia de BenchmarkResponse (US-2).
-
-    Args:
-        evaluation_id: Identificador UUID de la evaluación a procesar.
-        db: Sesión asíncrona de base de datos SQLAlchemy.
-
-    Returns:
-        Instancia de BenchmarkResponse serializable a JSON.
-
-    Raises:
-        HTTPException: 404 si la evaluación no existe.
+    US-8 & US-17: Orquestador asíncrono que recupera una UserEvaluation por su UUID,
+    calcula sub-scores Likert (US-4), percentiles (US-5), debilidad principal (US-6),
+    rebalanceo bayesiano (US-7) y comparación relativa con peers (US-17), retornando
+    el BenchmarkResponse tipado.
     """
-    # 1. Traer la evaluación del usuario
+    # 1. Recuperar la evaluación desde la BD
     result = await db.execute(
         select(UserEvaluation).where(UserEvaluation.evaluation_id == evaluation_id)
     )
     evaluation = result.scalar_one_or_none()
 
     if not evaluation:
-        raise EvaluationNotFoundException(evaluation_id)
-
+        raise EvaluationNotFoundException(evaluation_id=evaluation_id)
 
     # 2. Calcular los 5 sub-scores por dimensión (US-4)
     scores: dict[str, float] = {}
@@ -679,7 +786,17 @@ async def generate_benchmark_response(
     total_users = total_users_result.scalar() or 0
     weight_pub, weight_priv = calculate_rebalancing_weights(total_users)
 
-    # 6. Construir BenchmarkResponse fuertemente tipado (US-2)
+    # 6. Calcular Peer Comparison sobre la debilidad principal (US-17)
+    peer_comp = await get_peer_stats(
+        dimension=main_weakness_dim,
+        facility_size=evaluation.facility_size,
+        region=evaluation.region,
+        user_score=scores[main_weakness_dim],
+        db=db,
+        current_evaluation_id=evaluation.evaluation_id,
+    )
+
+    # 7. Construir BenchmarkResponse fuertemente tipado (US-2 y US-17)
     return BenchmarkResponse(
         evaluation_id=evaluation.evaluation_id,
         user_context=UserContextResponse(
@@ -706,6 +823,8 @@ async def generate_benchmark_response(
             weight_public=weight_pub,
             weight_private=weight_priv,
         ),
+        peer_comparison=peer_comp,
     )
+
 
 

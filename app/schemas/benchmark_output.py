@@ -65,6 +65,36 @@ class RebalancingStatusResponse(BaseModel):
         ..., description="Peso asignado a datos propios recolectados"
     )
 
+
+class PeerComparison(BaseModel):
+    """
+    US-17: Comparación relativa frente a peers del mismo tamaño y región.
+    Aplica K-anonimato para proteger la privacidad estadística.
+    """
+
+    peers_count: int = Field(
+        ..., description="Cantidad de evaluaciones de pares encontradas"
+    )
+    peer_average_score: float | None = Field(
+        default=None, description="Score promedio de los pares en la dimensión"
+    )
+    your_score: float = Field(
+        ..., description="Score del usuario en la dimensión evaluada"
+    )
+    gap_vs_peers: float | None = Field(
+        default=None, description="Diferencia: your_score - peer_average_score"
+    )
+    percentile_vs_peers: int | None = Field(
+        default=None, description="Percentil relativo entre pares (0-100)"
+    )
+    disclaimer: str | None = Field(
+        default=None, description="Aviso de muestra limitada o K-anonimato"
+    )
+    message: str | None = Field(
+        default=None, description="Mensaje explicativo o de estado"
+    )
+
+
 class MainWeaknessSchema(BaseModel):
     # campos necesarios que use el scoring_engine
     pass
@@ -73,7 +103,7 @@ class MainWeaknessSchema(BaseModel):
 class BenchmarkResponse(BaseModel):
     """
     Schema de Salida: Estructura uniforme retornada por el endpoint POST /submit y GET /results/{id}.
-    Contiene exactamente las 6 secciones requeridas por el Frontend.
+    Contiene exactamente las secciones requeridas por el Frontend.
     """
 
     evaluation_id: UUID = Field(
@@ -95,6 +125,11 @@ class BenchmarkResponse(BaseModel):
     rebalancing_status: RebalancingStatusResponse = Field(
         ..., description="Estado de ponderación del rebalanceo"
     )
+    peer_comparison: PeerComparison | None = Field(
+        default=None,
+        description="Comparación relativa contra peers del mismo tamaño y región",
+    )
+
 
     model_config = ConfigDict(
         json_schema_extra={
