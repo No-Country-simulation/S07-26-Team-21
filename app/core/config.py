@@ -12,6 +12,14 @@ class Settings(BaseSettings):
     POSTGRES_PASSWORD: str = "benchmark_password_2026"
     POSTGRES_DB: str = "benchmark_engine"
 
+    # Configuración de Proveedores LLM (US-19)
+    LLM_PROVIDER: str = "gemini"  # "gemini" | "claude" | "ollama"
+    GEMINI_API_KEY: str | None = None
+    CLAUDE_API_KEY: str | None = None
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    LLM_TIMEOUT_SECONDS: float = 5.0
+    LLM_RATE_LIMIT_PER_MINUTE: int = 30
+
     @property
     def ASYNC_DATABASE_URL(self) -> str:
         """Genera la URL de conexión asíncrona usando asyncpg."""
@@ -20,7 +28,7 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
 
 
-settings = Settings()
+settings = Settings()
