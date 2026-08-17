@@ -1,6 +1,8 @@
+from datetime import datetime, timezone
 from uuid import UUID
 from pydantic import BaseModel, Field, ConfigDict
 from app.schemas.benchmark_input import FacilitySizeEnum, RegionEnum
+
 
 
 class UserContextResponse(BaseModel):
@@ -95,9 +97,57 @@ class PeerComparison(BaseModel):
     )
 
 
-class MainWeaknessSchema(BaseModel):
-    # campos necesarios que use el scoring_engine
-    pass
+class MainWeaknessEnriched(BaseModel):
+    """
+    US-16: Diagnóstico enriquecido de la debilidad principal.
+    """
+
+    dimension: str = Field(
+        ..., description="Nombre de la dimensión operativa con mayor oportunidad de mejora"
+    )
+    user_score: float = Field(
+        ..., description="Score Likert promedio obtenido por el usuario"
+    )
+    top_quartile_average: float = Field(
+        ..., description="Promedio de élite / cuartil superior en la dimensión"
+    )
+    gap: float = Field(
+        ..., description="Brecha de mejora no negativa respecto a la élite (>= 0.0)"
+    )
+    recommendations: list[str] = Field(
+        ..., description="Acciones técnicas prioritarias para mitigar la debilidad"
+    )
+    llm_generated: bool = Field(
+        default=False, description="Flag indicador de generación vía IA o fallback"
+    )
+
+    def __str__(self) -> str:
+        return self.dimension
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.dimension == other
+        return super().__eq__(other)
+
+
+class NarrativesResponse(BaseModel):
+    """
+    US-20: Narrativas contextuales generadas por IA para reportes y PDF.
+    """
+
+    weakness_explanation: str = Field(
+        ..., description="Explicación contextual de la debilidad principal"
+    )
+    top_quartile_practices: str = Field(
+        ..., description="Prácticas técnicas implementadas por el cuartil superior"
+    )
+    llm_generated: bool = Field(
+        default=False, description="Indica si la narrativa fue generada por IA o fallback"
+    )
+    generated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="Marca de tiempo UTC de generación",
+    )
 
 
 class BenchmarkResponse(BaseModel):
@@ -118,9 +168,9 @@ class BenchmarkResponse(BaseModel):
     percentiles: PercentilesResponse = Field(
         ..., description="Percentiles alcanzados por dimensión y general"
     )
-    main_weakness: str = Field(
+    main_weakness: MainWeaknessEnriched | str = Field(
         ...,
-        description="Nombre de la dimensión principal con mayor oportunidad de mejora",
+        description="Diagnóstico enriquecido de la debilidad principal (o nombre de dimensión)",
     )
     rebalancing_status: RebalancingStatusResponse = Field(
         ..., description="Estado de ponderación del rebalanceo"
@@ -129,6 +179,12 @@ class BenchmarkResponse(BaseModel):
         default=None,
         description="Comparación relativa contra peers del mismo tamaño y región",
     )
+    narratives: NarrativesResponse | None = Field(
+        default=None,
+        description="Narrativas contextuales generadas por IA para reporte y PDF",
+    )
+
+
 
 
     model_config = ConfigDict(

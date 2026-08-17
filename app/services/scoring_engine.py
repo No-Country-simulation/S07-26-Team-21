@@ -16,8 +16,10 @@ Arquitectura y Componentes:
                                       el BenchmarkResponse (US-2) tipado.
 """
 
+import asyncio
 from typing import Any, List
 from uuid import UUID
+
 
 
 from fastapi import HTTPException, status
@@ -33,12 +35,17 @@ from app.schemas.benchmark_input import BenchmarkSubmitSchema
 from app.schemas.benchmark_output import (
     BenchmarkResponse,
     BenchmarkResultSchema,
+    MainWeaknessEnriched,
+    NarrativesResponse,
     PeerComparison,
     PercentilesResponse,
     RebalancingStatusResponse,
     ScoresLikertResponse,
     UserContextResponse,
 )
+from app.services.llm_service import llm_service
+
+
 
 
 
@@ -406,6 +413,43 @@ RECOMMENDATIONS_MAP: dict[str, list[str]] = {
     ],
 }
 
+STATIC_EXPLANATION_MAP: dict[str, str] = {
+    "visibilidad": (
+        "Su centro de datos presenta oportunidades de mejora en observabilidad cross-layer y telemetría en tiempo real entre capas de IT, energía y refrigeración."
+    ),
+    "friccion": (
+        "Se detecta fricción operativa relevante entre los equipos de infraestructura y los sistemas de enfriamiento y energía ante variaciones de carga."
+    ),
+    "latencia": (
+        "Los tiempos de respuesta y coordinación operativa frente a incidentes o aprovisionamiento dependen actualmente de procesos manuales o semi-automatizados."
+    ),
+    "auto_cuantificacion": (
+        "Falta consolidar la auto-cuantificación sistemática del PUE y la capacidad ociosa (stranded capacity) en términos financieros y operativos."
+    ),
+    "bloqueantes": (
+        "Existen bloqueantes estructurales asociados a disponibilidad de personal especializado, restricciones regulatorias o dependencia de cadena de suministro."
+    ),
+}
+
+STATIC_PRACTICES_MAP: dict[str, str] = {
+    "visibilidad": (
+        "Los operadores en el cuartil superior emplean plataformas DCIM integradas con telemetría granular de Scope 1-3 y dashboards unificados en tiempo real."
+    ),
+    "friccion": (
+        "Las instalaciones de élite implementan redundancia N+1 dinámica y automatización de lazo cerrado entre sistemas térmicos y eléctricos."
+    ),
+    "latencia": (
+        "Los líderes del sector automatizan la orquestación de cargas e infraestructura como código (IaC), reduciendo el tiempo de respuesta a minutos."
+    ),
+    "auto_cuantificacion": (
+        "Los operadores top 25% cuantifican continuamente el PUE en tiempo real (PUE < 1.25) y optimizan la capacidad varada semanalmente."
+    ),
+    "bloqueantes": (
+        "Las organizaciones de élite establecen programas continuos de capacitación técnica y contratos diversificados de suministro y energía limpia."
+    ),
+}
+
+
 
 def generate_recommendations(
     scores: dict[str, float],
@@ -546,6 +590,26 @@ def build_result_response(evaluation: UserEvaluation) -> BenchmarkResponse:
     }
 
     main_weakness_dim = get_main_weakness(percentiles)
+    main_weakness_enriched = enrich_main_weakness(
+        dimension=main_weakness_dim,
+        user_score=scores[main_weakness_dim],
+        top_quartile_avg=5.0,
+        llm_generated=False,
+    )
+
+    dim_key = main_weakness_dim.lower()
+    fallback_narratives = NarrativesResponse(
+        weakness_explanation=STATIC_EXPLANATION_MAP.get(
+            dim_key,
+            f"Su centro de datos presenta oportunidades de mejora en la dimensión {dim_key}.",
+        ),
+        top_quartile_practices=STATIC_PRACTICES_MAP.get(
+            dim_key,
+            "Los operadores líderes en el cuartil superior mantienen estándares de alta automatización y redundancia continua.",
+        ),
+        llm_generated=False,
+    )
+
 
     return BenchmarkResponse(
         evaluation_id=evaluation.evaluation_id,
@@ -568,12 +632,15 @@ def build_result_response(evaluation: UserEvaluation) -> BenchmarkResponse:
             bloqueantes=percentiles["bloqueantes"],
             general=percentiles["general"],
         ),
-        main_weakness=main_weakness_dim,
+        main_weakness=main_weakness_enriched,
         rebalancing_status=RebalancingStatusResponse(
             weight_public=1.0,
             weight_private=0.0,
         ),
+        narratives=fallback_narratives,
     )
+
+
 
 
 
@@ -620,6 +687,235 @@ def calculate_rebalancing_weights(total_users: int) -> tuple[float, float]:
         return (0.4, 0.6)
     else:
         return (0.2, 0.8)
+
+
+# ─────────────────────────────────────────────────────────────
+# US-16: Enriquecimiento de Debilidad Principal y Top Quartile
+# ─────────────────────────────────────────────────────────────
+
+async def calculate_top_quartile_average(
+    dimension: str,
+    db: AsyncSession,
+) -> float:
+    """
+    US-16: Calcula el promedio del cuartil superior (élite) para una dimensión.
+    Combina:
+    - 50% Promedio público de level_5_likert_equivalent en IndustryBenchmark
+    - 50% Promedio privado de usuarios con percentil > 75 en esa dimensión
+    
+    Si no hay usuarios en el percentil > 75 (Cold Start), usa el 100% del benchmark público.
+    """
+    dim_key = dimension.lower()
+    if dim_key not in SCORE_COLUMNS:
+        raise ValueError(
+            f"Dimensión '{dimension}' no válida. Opciones: {list(SCORE_COLUMNS.keys())}"
+        )
+
+    # 1. Benchmark Público: Promedio de level_5_likert_equivalent
+    pub_query = select(
+        func.avg(IndustryBenchmark.level_5_likert_equivalent)
+    ).where(IndustryBenchmark.dimension == dim_key)
+    pub_res = await db.execute(pub_query)
+    pub_scalar = pub_res.scalar()
+    pub_avg = float(pub_scalar if pub_scalar is not None else 5.0)
+
+    # 2. Benchmark Privado: Promedio de usuarios con percentil > 75
+    pct_col = getattr(UserEvaluation, f"percentile_{dim_key}")
+    score_col = SCORE_COLUMNS[dim_key]
+    priv_query = select(
+        func.avg(score_col)
+    ).where(
+        pct_col > 75,
+        score_col.isnot(None),
+    )
+    priv_res = await db.execute(priv_query)
+    priv_scalar = priv_res.scalar()
+
+    # 3. Combinación / Manejo de Cold Start
+    if priv_scalar is not None:
+        priv_avg = float(priv_scalar)
+        top_quartile_avg = round((pub_avg * 0.5) + (priv_avg * 0.5), 2)
+    else:
+        top_quartile_avg = round(pub_avg, 2)
+
+    return top_quartile_avg
+
+
+def enrich_main_weakness(
+    dimension: str,
+    user_score: float,
+    top_quartile_avg: float,
+    recommendations: list[str] | None = None,
+    llm_generated: bool = False,
+) -> MainWeaknessEnriched:
+    """
+    US-16 & US-20: Construye el objeto enriquecido MainWeaknessEnriched.
+    - Calcula el gap no negativo: max(0.0, round(top_quartile_avg - user_score, 2))
+    - Inyecta recomendaciones dinámicas generadas por IA o fallback desde RECOMMENDATIONS_MAP
+    - Setea llm_generated según el resultado del motor LLM
+    """
+    dim_key = dimension.lower()
+    gap = max(0.0, round(top_quartile_avg - user_score, 2))
+    recs = recommendations if recommendations is not None else list(
+        RECOMMENDATIONS_MAP.get(
+            dim_key,
+            [
+                "Monitorear las métricas clave de la dimensión en dashboards centralizados.",
+                "Establecer objetivos operativos alineados con los estándares de la industria.",
+                "Automatizar los procesos manuales críticos identificados.",
+            ],
+        )
+    )
+
+    return MainWeaknessEnriched(
+        dimension=dim_key,
+        user_score=round(user_score, 2),
+        top_quartile_average=round(top_quartile_avg, 2),
+        gap=gap,
+        recommendations=recs,
+        llm_generated=llm_generated,
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# US-20: generate_ai_insights (Generación Concurrente con asyncio.gather)
+# ─────────────────────────────────────────────────────────────
+
+async def generate_ai_insights(
+    dimension: str,
+    user_score: float,
+    percentile: int,
+    facility_size: str | None,
+    region: str | None,
+    top_quartile_avg: float,
+    gap: float,
+) -> tuple[NarrativesResponse, list[str], bool]:
+    """
+    US-20 & Upgrade US-16: Genera simultáneamente con asyncio.gather:
+    1. Explicación de la debilidad principal (weakness_explanation).
+    2. Prácticas del cuartil superior de la industria (top_quartile_practices).
+    3. Recomendaciones técnicas prioritarias (recommendations).
+
+    Aplica llaves de caché diferenciadas y fallback ante fallos o timeouts.
+    Retorna: (NarrativesResponse, list[str] de recomendaciones, bool llm_generated)
+    """
+    dim_key = dimension.lower()
+    size_str = str(
+        facility_size.value
+        if hasattr(facility_size, "value")
+        else facility_size or "medium"
+    )
+    region_str = str(
+        region.value if hasattr(region, "value") else region or "latam"
+    )
+
+    # 1. Armar cache keys canónicas diferenciadas
+    key_weakness = f"narrative:weakness:{dim_key}:p{percentile}:{size_str.lower()}:{region_str.lower()}"
+    key_practices = f"narrative:practices:{dim_key}:p{percentile}:{size_str.lower()}:{region_str.lower()}"
+    key_recs = f"narrative:recs:{dim_key}:p{percentile}:{size_str.lower()}:{region_str.lower()}"
+
+    # 2. Prompts contextualizados
+    prompt_weakness = (
+        f"Eres un experto en infraestructura y centros de datos. Explica en 1 párrafo conciso y profesional "
+        f"por qué para un operador de tamaño '{size_str}' en la región '{region_str}', la dimensión '{dim_key}' "
+        f"es su debilidad principal con un score de {user_score}/5.0 (percentil {percentile}% frente a la industria)."
+    )
+
+    prompt_practices = (
+        f"Explica en 1 párrafo técnico y conciso qué prácticas operativas y arquitectónicas implementan "
+        f"los centros de datos de élite (Top 25% cuartil superior, promedio {top_quartile_avg}/5.0) "
+        f"en la dimensión '{dim_key}' para alcanzar la máxima eficiencia y resiliencia."
+    )
+
+    prompt_recs = (
+        f"Eres operador {size_str} en {region_str}. Tu {dim_key} es {user_score}/5, la élite es {top_quartile_avg}/5. "
+        f"Gap: {gap} puntos. Genera exactamente 3 acciones técnicas concretas para mejorar, separadas por saltos de línea."
+    )
+
+    # 3. Fallbacks curados
+    fb_weakness = STATIC_EXPLANATION_MAP.get(
+        dim_key,
+        f"Su evaluación en {dim_key} ({user_score}/5.0) se ubica en el percentil {percentile}%, representando el área prioritaria de optimización.",
+    )
+    fb_practices = STATIC_PRACTICES_MAP.get(
+        dim_key,
+        f"Los operadores líderes en {dim_key} mantienen estándares de automatización y redundancia continua con promedios superiores a {top_quartile_avg}/5.0.",
+    )
+    fb_recs = RECOMMENDATIONS_MAP.get(
+        dim_key,
+        [
+            "Monitorear las métricas clave de la dimensión en dashboards centralizados.",
+            "Establecer objetivos operativos alineados con los estándares de la industria.",
+            "Automatizar los procesos manuales críticos identificados.",
+        ],
+    )
+    fb_recs_text = "\n".join(fb_recs)
+
+    # 4. Ejecución concurrente con asyncio.gather
+    results = await asyncio.gather(
+        llm_service.generate_narrative(
+            prompt_weakness, cache_key=key_weakness, fallback_text=fb_weakness
+        ),
+        llm_service.generate_narrative(
+            prompt_practices, cache_key=key_practices, fallback_text=fb_practices
+        ),
+        llm_service.generate_narrative(
+            prompt_recs, cache_key=key_recs, fallback_text=fb_recs_text
+        ),
+        return_exceptions=True,
+    )
+
+    # Procesar resultado 1: weakness explanation
+    res_w = results[0]
+    if isinstance(res_w, Exception) or getattr(res_w, "status", None) not in (
+        "success",
+        "cached",
+    ):
+        weakness_text = fb_weakness
+        w_llm = False
+    else:
+        weakness_text = res_w.text
+        w_llm = True
+
+    # Procesar resultado 2: top quartile practices
+    res_p = results[1]
+    if isinstance(res_p, Exception) or getattr(res_p, "status", None) not in (
+        "success",
+        "cached",
+    ):
+        practices_text = fb_practices
+        p_llm = False
+    else:
+        practices_text = res_p.text
+        p_llm = True
+
+    # Procesar resultado 3: recommendations
+    res_r = results[2]
+    if isinstance(res_r, Exception) or getattr(res_r, "status", None) not in (
+        "success",
+        "cached",
+    ):
+        parsed_recs = fb_recs
+        r_llm = False
+    else:
+        raw_lines = [
+            line.lstrip("0123456789.-* ").strip()
+            for line in res_r.text.split("\n")
+            if line.strip()
+        ]
+        parsed_recs = raw_lines if len(raw_lines) >= 2 else fb_recs
+        r_llm = True
+
+    overall_llm_generated = w_llm and p_llm and r_llm
+
+    narratives_resp = NarrativesResponse(
+        weakness_explanation=weakness_text,
+        top_quartile_practices=practices_text,
+        llm_generated=overall_llm_generated,
+    )
+
+    return narratives_resp, parsed_recs, overall_llm_generated
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -733,8 +1029,8 @@ async def generate_benchmark_response(
     db: AsyncSession,
 ) -> BenchmarkResponse:
     """
-    US-8 & US-17: Orquestador asíncrono que recupera una UserEvaluation por su UUID,
-    calcula sub-scores Likert (US-4), percentiles (US-5), debilidad principal (US-6),
+    US-8, US-16 & US-17: Orquestador asíncrono que recupera una UserEvaluation por su UUID,
+    calcula sub-scores Likert (US-4), percentiles (US-5), debilidad principal enriquecida (US-6, US-16),
     rebalanceo bayesiano (US-7) y comparación relativa con peers (US-17), retornando
     el BenchmarkResponse tipado.
     """
@@ -776,8 +1072,28 @@ async def generate_benchmark_response(
         avg_pct = sum(percentiles[dim] for dim in DIMENSION_QUESTIONS) / len(DIMENSION_QUESTIONS)
         percentiles["general"] = round(avg_pct)
 
-    # 4. Identificar la debilidad principal (US-6)
+    # 4. Identificar la debilidad principal (US-6), calcular Top Quartile (US-16) e IA concurrente (US-20)
     main_weakness_dim = get_main_weakness(percentiles)
+    top_quartile_avg = await calculate_top_quartile_average(main_weakness_dim, db)
+    gap = max(0.0, round(top_quartile_avg - scores[main_weakness_dim], 2))
+
+    narratives_resp, ai_recs, is_llm = await generate_ai_insights(
+        dimension=main_weakness_dim,
+        user_score=scores[main_weakness_dim],
+        percentile=percentiles[main_weakness_dim],
+        facility_size=evaluation.facility_size,
+        region=evaluation.region,
+        top_quartile_avg=top_quartile_avg,
+        gap=gap,
+    )
+
+    main_weakness_enriched = enrich_main_weakness(
+        dimension=main_weakness_dim,
+        user_score=scores[main_weakness_dim],
+        top_quartile_avg=top_quartile_avg,
+        recommendations=ai_recs,
+        llm_generated=is_llm,
+    )
 
     # 5. Contar el total de usuarios en BD y calcular rebalanceo bayesiano (US-7)
     total_users_result = await db.execute(
@@ -796,7 +1112,7 @@ async def generate_benchmark_response(
         current_evaluation_id=evaluation.evaluation_id,
     )
 
-    # 7. Construir BenchmarkResponse fuertemente tipado (US-2 y US-17)
+    # 7. Construir BenchmarkResponse fuertemente tipado (US-2, US-16, US-17 y US-20)
     return BenchmarkResponse(
         evaluation_id=evaluation.evaluation_id,
         user_context=UserContextResponse(
@@ -818,13 +1134,12 @@ async def generate_benchmark_response(
             bloqueantes=percentiles["bloqueantes"],
             general=percentiles["general"],
         ),
-        main_weakness=main_weakness_dim,
+        main_weakness=main_weakness_enriched,
         rebalancing_status=RebalancingStatusResponse(
             weight_public=weight_pub,
             weight_private=weight_priv,
         ),
         peer_comparison=peer_comp,
+        narratives=narratives_resp,
     )
-
-
 

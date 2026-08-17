@@ -64,7 +64,9 @@ async def test_e2e_post_submit_valid_payload_returns_201_and_benchmark_response(
         assert 0 <= percentiles[dim] <= 100
 
     # 5. Verificar Debilidad Principal
-    assert data["main_weakness"] in ["visibilidad", "friccion", "latencia", "auto_cuantificacion", "bloqueantes"]
+    mw_dim = data["main_weakness"]["dimension"] if isinstance(data["main_weakness"], dict) else data["main_weakness"]
+    assert mw_dim in ["visibilidad", "friccion", "latencia", "auto_cuantificacion", "bloqueantes"]
+
 
     # 6. Verificar Rebalanceo Bayesiano
     rebalancing = data["rebalancing_status"]
@@ -186,8 +188,11 @@ async def test_e2e_consecutive_submissions_differential_percentiles_and_persiste
         assert data_a["percentiles"]["friccion"] > data_b["percentiles"]["friccion"]
 
         # Verificar debilidad principal calculada acorde a su perfil
-        assert data_a["main_weakness"] == "latencia"
-        assert data_b["main_weakness"] == "friccion"
+        mw_a = data_a["main_weakness"]["dimension"] if isinstance(data_a["main_weakness"], dict) else data_a["main_weakness"]
+        mw_b = data_b["main_weakness"]["dimension"] if isinstance(data_b["main_weakness"], dict) else data_b["main_weakness"]
+        assert mw_a == "latencia"
+        assert mw_b == "friccion"
+
 
 
 

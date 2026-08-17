@@ -6,7 +6,9 @@ from app.core.database import get_db
 from app.models.user_evaluation import UserEvaluation
 from app.schemas.benchmark_input import BenchmarkRequest
 from app.schemas.benchmark_output import BenchmarkResponse
+from app.schemas.benchmark_stats import BenchmarkStats
 from app.services.scoring_engine import generate_benchmark_response
+from app.services.stats_service import get_platform_stats, stats_cache
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,9 @@ async def submit_benchmark(
         await db.commit()
         await db.refresh(evaluation)
 
+        # Invalida la caché de estadísticas para reflejar la nueva evaluación en tiempo real
+        stats_cache.clear()
+
         # 3. Orquestar el cálculo completo y generar la respuesta (US-8)
         response = await generate_benchmark_response(evaluation.evaluation_id, db)
         return response
@@ -73,3 +78,23 @@ async def submit_benchmark(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error interno del servidor al procesar la evaluación de benchmark.",
         )
+
+
+@router.get(
+    "/stats",
+    response_model=BenchmarkStats,
+    status_code=status.HTTP_200_OK,
+    summary="Obtener métricas agregadas globales de la plataforma",
+    description=(
+        "US-18: Retorna métricas globales agregadas (total de evaluaciones, distribuciones, "
+        "percentil promedio y promedios por dimensión) con caché en memoria de 1 hora."
+    ),
+)
+async def get_benchmark_stats(
+    db: AsyncSession = Depends(get_db),
+) -> BenchmarkStats:
+    """
+    US-18: Retorna estadísticas globales de la plataforma para landing page y dashboards.
+    """
+    return await get_platform_stats(db)
+
