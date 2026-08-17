@@ -1,4 +1,7 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+ENV_FILE = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -15,10 +18,17 @@ class Settings(BaseSettings):
     # Configuración de Proveedores LLM (US-19)
     LLM_PROVIDER: str = "gemini"  # "gemini" | "claude" | "ollama"
     GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-3.5-flash-lite"
+
     CLAUDE_API_KEY: str | None = None
+    CLAUDE_MODEL: str = "claude-3-5-sonnet-20241022"
+
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    LLM_TIMEOUT_SECONDS: float = 5.0
+    LLM_TIMEOUT_SECONDS: float = 25.0
+
     LLM_RATE_LIMIT_PER_MINUTE: int = 30
+
+
 
     @property
     def ASYNC_DATABASE_URL(self) -> str:
@@ -28,7 +38,12 @@ class Settings(BaseSettings):
             f"@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
         )
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE,
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
 
 
-settings = Settings()
+settings = Settings()

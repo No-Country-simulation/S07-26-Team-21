@@ -74,23 +74,28 @@ def test_provider_fail_fast_raises_value_error_on_missing_api_keys():
 @pytest.mark.asyncio
 async def test_gemini_provider_formats_payload_and_parses_response():
     """
-    Verifica el formato del request y parseo de respuesta de Google Gemini.
+    Verifica el formato del request y parseo de respuesta de Google Gemini (Interactions & Steps).
     """
-    provider = GeminiProvider(api_key="test_gemini_key", validate=False)
+    provider = GeminiProvider(
+        api_key="test_gemini_key", model="gemini-3.5-flash-lite", validate=False
+    )
+
+
 
     fake_response = {
-        "candidates": [
+        "status": "completed",
+        "steps": [
+            {"type": "thought", "text": "Razonamiento interno..."},
             {
-                "content": {
-                    "parts": [{"text": "Acción 1: Implementar DCIM."}]
-                }
-            }
-        ]
+                "type": "model_output",
+                "content": [{"type": "text", "text": "Acción 1: Implementar DCIM."}],
+            },
+        ],
     }
 
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.json.return_value = fake_response
-    mock_resp.raise_for_status = MagicMock()
 
     with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
         mock_post.return_value = mock_resp
@@ -99,8 +104,12 @@ async def test_gemini_provider_formats_payload_and_parses_response():
         assert text == "Acción 1: Implementar DCIM."
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args
-        assert "key=test_gemini_key" in args[0]
-        assert "contents" in kwargs["json"]
+        assert kwargs["headers"]["x-goog-api-key"] == "test_gemini_key"
+        assert kwargs["json"]["model"] == "gemini-3.5-flash-lite"
+        assert kwargs["json"]["input"] == "Genera recomendaciones"
+
+
+
 
 
 @pytest.mark.asyncio

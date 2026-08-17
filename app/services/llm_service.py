@@ -74,11 +74,11 @@ class GeminiProvider(BaseLLMProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "gemini-1.5-flash",
+        model: Optional[str] = None,
         validate: bool = True,
     ):
         self.api_key = api_key if api_key is not None else settings.GEMINI_API_KEY
-        self.model = model
+        self.model = model or settings.GEMINI_MODEL
         if validate:
             self.validate_credentials()
 
@@ -90,21 +90,69 @@ class GeminiProvider(BaseLLMProvider):
             )
 
     async def generate(self, prompt: str, timeout_seconds: float = 5.0) -> str:
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent?key={self.api_key}"
-        )
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            response = await client.post(url, json=payload)
+            # 1. Intentar endpoint moderno /v1beta/interactions (Google Gemini 2026 Spec)
+            try:
+                url_interactions = "https://generativelanguage.googleapis.com/v1beta/interactions"
+                payload_interactions = {"model": self.model, "input": prompt}
+                resp = await client.post(
+                    url_interactions, headers=headers, json=payload_interactions
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Caso A: output_text directo
+                    if data.get("output_text"):
+                        return str(data["output_text"]).strip()
+
+                    # Caso B: Iterar steps buscando model_output (saltando pasos de pensamiento/thought)
+                    for step in data.get("steps", []):
+                        if step.get("type") in ("model_output", "modelOutput") or "content" in step:
+                            content = step.get("content", [])
+                            if isinstance(content, list):
+                                for item in content:
+                                    if isinstance(item, dict) and "text" in item:
+                                        return str(item["text"]).strip()
+                                    elif isinstance(item, str) and item.strip():
+                                        return item.strip()
+                        if "modelOutput" in step:
+                            m_out = step["modelOutput"]
+                            for item in m_out.get("content", []):
+                                if isinstance(item, dict) and "text" in item:
+                                    return str(item["text"]).strip()
+            except Exception as e:
+                logger.debug(f"[GeminiProvider] /interactions falló, probando generateContent: {e}")
+
+            # 2. Endpoint estándar /v1beta/models/{self.model}:generateContent
+            url_generate = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{self.model}:generateContent"
+            )
+            payload_generate = {"contents": [{"parts": [{"text": prompt}]}]}
+
+            response = await client.post(
+                url_generate, headers=headers, json=payload_generate
+            )
             response.raise_for_status()
             data = response.json()
+
+            # Extraer de candidates
             candidates = data.get("candidates", [])
-            if not candidates:
-                raise ValueError("Respuesta de Gemini vacía o sin candidatos.")
-            text = candidates[0]["content"]["parts"][0]["text"]
-            return text.strip()
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts and "text" in parts[0]:
+                    return parts[0]["text"].strip()
+
+            if data.get("output_text"):
+                return str(data["output_text"]).strip()
+
+            raise ValueError(f"Respuesta de Gemini sin texto válido: {data}")
+
+
 
 
 class ClaudeProvider(BaseLLMProvider):
@@ -117,13 +165,14 @@ class ClaudeProvider(BaseLLMProvider):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "claude-3-5-sonnet-20241022",
+        model: Optional[str] = None,
         validate: bool = True,
     ):
         self.api_key = api_key if api_key is not None else settings.CLAUDE_API_KEY
-        self.model = model
+        self.model = model or settings.CLAUDE_MODEL
         if validate:
             self.validate_credentials()
+
 
     def validate_credentials(self) -> None:
         if not self.api_key or self.api_key.strip() == "":
