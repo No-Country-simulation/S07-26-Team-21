@@ -95,9 +95,37 @@ class PeerComparison(BaseModel):
     )
 
 
-class MainWeaknessSchema(BaseModel):
-    # campos necesarios que use el scoring_engine
-    pass
+class MainWeaknessEnriched(BaseModel):
+    """
+    US-16: Diagnóstico enriquecido de la debilidad principal.
+    """
+
+    dimension: str = Field(
+        ..., description="Nombre de la dimensión operativa con mayor oportunidad de mejora"
+    )
+    user_score: float = Field(
+        ..., description="Score Likert promedio obtenido por el usuario"
+    )
+    top_quartile_average: float = Field(
+        ..., description="Promedio de élite / cuartil superior en la dimensión"
+    )
+    gap: float = Field(
+        ..., description="Brecha de mejora no negativa respecto a la élite (>= 0.0)"
+    )
+    recommendations: list[str] = Field(
+        ..., description="Acciones técnicas prioritarias para mitigar la debilidad"
+    )
+    llm_generated: bool = Field(
+        default=False, description="Flag indicador de generación vía IA o fallback"
+    )
+
+    def __str__(self) -> str:
+        return self.dimension
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.dimension == other
+        return super().__eq__(other)
 
 
 class BenchmarkResponse(BaseModel):
@@ -118,9 +146,9 @@ class BenchmarkResponse(BaseModel):
     percentiles: PercentilesResponse = Field(
         ..., description="Percentiles alcanzados por dimensión y general"
     )
-    main_weakness: str = Field(
+    main_weakness: MainWeaknessEnriched | str = Field(
         ...,
-        description="Nombre de la dimensión principal con mayor oportunidad de mejora",
+        description="Diagnóstico enriquecido de la debilidad principal (o nombre de dimensión)",
     )
     rebalancing_status: RebalancingStatusResponse = Field(
         ..., description="Estado de ponderación del rebalanceo"
@@ -129,6 +157,7 @@ class BenchmarkResponse(BaseModel):
         default=None,
         description="Comparación relativa contra peers del mismo tamaño y región",
     )
+
 
 
     model_config = ConfigDict(

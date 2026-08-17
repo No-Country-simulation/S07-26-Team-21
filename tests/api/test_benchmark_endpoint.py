@@ -85,13 +85,15 @@ async def test_submit_benchmark_e2e_success_returns_201(
 
     # 5. Validar debilidad principal
     assert "main_weakness" in data
-    assert data["main_weakness"] in [
+    mw_dim = data["main_weakness"]["dimension"] if isinstance(data["main_weakness"], dict) else data["main_weakness"]
+    assert mw_dim in [
         "visibilidad",
         "latencia",
         "friccion",
         "auto_cuantificacion",
         "bloqueantes",
     ]
+
 
     # 6. Validar rebalanceo
     assert "rebalancing_status" in data

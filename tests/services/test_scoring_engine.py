@@ -17,7 +17,8 @@ from app.schemas.benchmark_input import (
     FacilitySizeEnum,
     RegionEnum,
 )
-from app.schemas.benchmark_output import BenchmarkResponse
+from app.schemas.benchmark_output import BenchmarkResponse, MainWeaknessEnriched
+
 from app.services.scoring_engine import (
     build_result_response,
     calculate_dimension_percentile,
@@ -355,14 +356,16 @@ async def test_generate_benchmark_response_integration(db: AsyncSession):
         assert 0 <= response.percentiles.general <= 100
 
         # 5. Verificar debilidad principal
-        assert isinstance(response.main_weakness, str)
-        assert response.main_weakness in [
+        assert isinstance(response.main_weakness, (str, MainWeaknessEnriched))
+        mw_dim = response.main_weakness.dimension if isinstance(response.main_weakness, MainWeaknessEnriched) else response.main_weakness
+        assert mw_dim in [
             "visibilidad",
             "latencia",
             "friccion",
             "auto_cuantificacion",
             "bloqueantes",
         ]
+
 
         # 6. Verificar rebalanceo
         assert isinstance(response.rebalancing_status.weight_public, float)

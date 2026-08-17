@@ -33,12 +33,14 @@ from app.schemas.benchmark_input import BenchmarkSubmitSchema
 from app.schemas.benchmark_output import (
     BenchmarkResponse,
     BenchmarkResultSchema,
+    MainWeaknessEnriched,
     PeerComparison,
     PercentilesResponse,
     RebalancingStatusResponse,
     ScoresLikertResponse,
     UserContextResponse,
 )
+
 
 
 
@@ -546,6 +548,11 @@ def build_result_response(evaluation: UserEvaluation) -> BenchmarkResponse:
     }
 
     main_weakness_dim = get_main_weakness(percentiles)
+    main_weakness_enriched = enrich_main_weakness(
+        dimension=main_weakness_dim,
+        user_score=scores[main_weakness_dim],
+        top_quartile_avg=5.0,
+    )
 
     return BenchmarkResponse(
         evaluation_id=evaluation.evaluation_id,
@@ -568,12 +575,13 @@ def build_result_response(evaluation: UserEvaluation) -> BenchmarkResponse:
             bloqueantes=percentiles["bloqueantes"],
             general=percentiles["general"],
         ),
-        main_weakness=main_weakness_dim,
+        main_weakness=main_weakness_enriched,
         rebalancing_status=RebalancingStatusResponse(
             weight_public=1.0,
             weight_private=0.0,
         ),
     )
+
 
 
 
@@ -620,6 +628,87 @@ def calculate_rebalancing_weights(total_users: int) -> tuple[float, float]:
         return (0.4, 0.6)
     else:
         return (0.2, 0.8)
+
+
+# ─────────────────────────────────────────────────────────────
+# US-16: Enriquecimiento de Debilidad Principal y Top Quartile
+# ─────────────────────────────────────────────────────────────
+
+async def calculate_top_quartile_average(
+    dimension: str,
+    db: AsyncSession,
+) -> float:
+    """
+    US-16: Calcula el promedio del cuartil superior (élite) para una dimensión.
+    Combina:
+    - 50% Promedio público de level_5_likert_equivalent en IndustryBenchmark
+    - 50% Promedio privado de usuarios con percentil > 75 en esa dimensión
+    
+    Si no hay usuarios en el percentil > 75 (Cold Start), usa el 100% del benchmark público.
+    """
+    dim_key = dimension.lower()
+    if dim_key not in SCORE_COLUMNS:
+        raise ValueError(
+            f"Dimensión '{dimension}' no válida. Opciones: {list(SCORE_COLUMNS.keys())}"
+        )
+
+    # 1. Benchmark Público: Promedio de level_5_likert_equivalent
+    pub_query = select(
+        func.avg(IndustryBenchmark.level_5_likert_equivalent)
+    ).where(IndustryBenchmark.dimension == dim_key)
+    pub_res = await db.execute(pub_query)
+    pub_scalar = pub_res.scalar()
+    pub_avg = float(pub_scalar if pub_scalar is not None else 5.0)
+
+    # 2. Benchmark Privado: Promedio de usuarios con percentil > 75
+    pct_col = getattr(UserEvaluation, f"percentile_{dim_key}")
+    score_col = SCORE_COLUMNS[dim_key]
+    priv_query = select(
+        func.avg(score_col)
+    ).where(
+        pct_col > 75,
+        score_col.isnot(None),
+    )
+    priv_res = await db.execute(priv_query)
+    priv_scalar = priv_res.scalar()
+
+    # 3. Combinación / Manejo de Cold Start
+    if priv_scalar is not None:
+        priv_avg = float(priv_scalar)
+        top_quartile_avg = round((pub_avg * 0.5) + (priv_avg * 0.5), 2)
+    else:
+        top_quartile_avg = round(pub_avg, 2)
+
+    return top_quartile_avg
+
+
+def enrich_main_weakness(
+    dimension: str,
+    user_score: float,
+    top_quartile_avg: float,
+) -> MainWeaknessEnriched:
+    """
+    US-16: Construye el objeto enriquecido MainWeaknessEnriched.
+    - Calcula el gap no negativo: max(0.0, round(top_quartile_avg - user_score, 2))
+    - Asigna 3 a 5 recomendaciones técnicas desde RECOMMENDATIONS_MAP
+    - Setea llm_generated = False (hasta la integración con US-19)
+    """
+    dim_key = dimension.lower()
+    gap = max(0.0, round(top_quartile_avg - user_score, 2))
+    recs = list(RECOMMENDATIONS_MAP.get(dim_key, [
+        "Monitorear las métricas clave de la dimensión en dashboards centralizados.",
+        "Establecer objetivos operativos alineados con los estándares de la industria.",
+        "Automatizar los procesos manuales críticos identificados.",
+    ]))
+
+    return MainWeaknessEnriched(
+        dimension=dim_key,
+        user_score=round(user_score, 2),
+        top_quartile_average=round(top_quartile_avg, 2),
+        gap=gap,
+        recommendations=recs,
+        llm_generated=False,
+    )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -733,8 +822,8 @@ async def generate_benchmark_response(
     db: AsyncSession,
 ) -> BenchmarkResponse:
     """
-    US-8 & US-17: Orquestador asíncrono que recupera una UserEvaluation por su UUID,
-    calcula sub-scores Likert (US-4), percentiles (US-5), debilidad principal (US-6),
+    US-8, US-16 & US-17: Orquestador asíncrono que recupera una UserEvaluation por su UUID,
+    calcula sub-scores Likert (US-4), percentiles (US-5), debilidad principal enriquecida (US-6, US-16),
     rebalanceo bayesiano (US-7) y comparación relativa con peers (US-17), retornando
     el BenchmarkResponse tipado.
     """
@@ -776,8 +865,14 @@ async def generate_benchmark_response(
         avg_pct = sum(percentiles[dim] for dim in DIMENSION_QUESTIONS) / len(DIMENSION_QUESTIONS)
         percentiles["general"] = round(avg_pct)
 
-    # 4. Identificar la debilidad principal (US-6)
+    # 4. Identificar la debilidad principal (US-6) y enriquecerla con Top Quartile y Gap (US-16)
     main_weakness_dim = get_main_weakness(percentiles)
+    top_quartile_avg = await calculate_top_quartile_average(main_weakness_dim, db)
+    main_weakness_enriched = enrich_main_weakness(
+        dimension=main_weakness_dim,
+        user_score=scores[main_weakness_dim],
+        top_quartile_avg=top_quartile_avg,
+    )
 
     # 5. Contar el total de usuarios en BD y calcular rebalanceo bayesiano (US-7)
     total_users_result = await db.execute(
@@ -796,7 +891,7 @@ async def generate_benchmark_response(
         current_evaluation_id=evaluation.evaluation_id,
     )
 
-    # 7. Construir BenchmarkResponse fuertemente tipado (US-2 y US-17)
+    # 7. Construir BenchmarkResponse fuertemente tipado (US-2, US-16 y US-17)
     return BenchmarkResponse(
         evaluation_id=evaluation.evaluation_id,
         user_context=UserContextResponse(
@@ -818,13 +913,10 @@ async def generate_benchmark_response(
             bloqueantes=percentiles["bloqueantes"],
             general=percentiles["general"],
         ),
-        main_weakness=main_weakness_dim,
+        main_weakness=main_weakness_enriched,
         rebalancing_status=RebalancingStatusResponse(
             weight_public=weight_pub,
             weight_private=weight_priv,
         ),
         peer_comparison=peer_comp,
     )
-
-
-
