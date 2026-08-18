@@ -22,8 +22,8 @@ class Settings(BaseSettings):
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5433
     POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "benchmark_password_2026"
-    POSTGRES_DB: str = "benchmark_engine"
+    POSTGRES_PASSWORD: str = "postgres"
+    POSTGRES_DB: str = "benchmark_db"
 
     # Configuración de Proveedores LLM (US-19)
     LLM_PROVIDER: str = "gemini"  # "gemini" | "claude" | "ollama"
