@@ -17,4 +17,3 @@ pytest>=8.0.0               # Framework principal para testing unitario y de int
 pytest-asyncio>=0.23.0      # Extensión para ejecutar tests asíncronos (async/await) con pytest
 pytest-cov>=4.1.0           # Medición y reportes de cobertura de código para pytest
 httpx>=0.27.0               # Cliente HTTP asíncrono para tests E2E contra FastAPI (ASGITransport)
-aiosqlite>=0.22.1             # Driver de conexión asíncrona para SQLite (para tests locales)

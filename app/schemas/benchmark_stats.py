@@ -22,14 +22,6 @@ class BenchmarkStats(BaseModel):
     evaluations_by_dimension_strength: Dict[str, float] = Field(
         ..., description="Promedio de scores Likert por dimensión operativa"
     )
-    average_scores: Dict[str, float] = Field(
-        default_factory=dict,
-        description="Promedio de scores Likert por dimensión (alias de compatibilidad)",
-    )
-    general_average: float = Field(
-        default=0.0,
-        description="Promedio general de los scores Likert por dimensión",
-    )
 
     model_config = ConfigDict(
         json_schema_extra={

@@ -118,20 +118,12 @@ async def get_platform_stats(
     else:
         avg_gen_pct = 0.0
 
-    general_average = round(
-        sum(evaluations_by_dimension_strength.values())
-        / len(evaluations_by_dimension_strength),
-        2,
-    )
-
     stats = BenchmarkStats(
         total_evaluations=total_evaluations,
         by_region=by_region,
         by_size=by_size,
         average_general_percentile=avg_gen_pct,
         evaluations_by_dimension_strength=evaluations_by_dimension_strength,
-        average_scores=evaluations_by_dimension_strength.copy(),
-        general_average=general_average,
     )
 
     # Guardar en caché
