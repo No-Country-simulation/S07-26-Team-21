@@ -851,7 +851,10 @@ async def generate_ai_insights(
     )
     fb_recs_text = "\n".join(fb_recs)
 
-    # 4. Ejecución concurrente con asyncio.gather
+    # 4. Inferencia concurrente con asyncio.gather:
+    # Disparamos las 3 llamadas al LLM en paralelo (Explicación de debilidad, Prácticas del cuartil superior y Recomendaciones).
+    # Usamos return_exceptions=True para que si una falla individualmente (por timeout o error de proveedor),
+    # no cancele las demás ni lance una excepción no controlada, permitiendo aplicar degradación suave (fallback).
     results = await asyncio.gather(
         llm_service.generate_narrative(
             prompt_weakness, cache_key=key_weakness, fallback_text=fb_weakness
@@ -865,7 +868,8 @@ async def generate_ai_insights(
         return_exceptions=True,
     )
 
-    # Procesar resultado 1: weakness explanation
+    # 5. Procesamiento con Fallback Suave (Graceful Fallback):
+    # Rama 1: Explicación de la debilidad principal
     res_w = results[0]
     if isinstance(res_w, Exception) or getattr(res_w, "status", None) not in (
         "success",
@@ -877,7 +881,7 @@ async def generate_ai_insights(
         weakness_text = res_w.text
         w_llm = True
 
-    # Procesar resultado 2: top quartile practices
+    # Rama 2: Prácticas del cuartil superior
     res_p = results[1]
     if isinstance(res_p, Exception) or getattr(res_p, "status", None) not in (
         "success",
@@ -889,7 +893,7 @@ async def generate_ai_insights(
         practices_text = res_p.text
         p_llm = True
 
-    # Procesar resultado 3: recommendations
+    # Rama 3: Recomendaciones técnicas dinámicas
     res_r = results[2]
     if isinstance(res_r, Exception) or getattr(res_r, "status", None) not in (
         "success",
@@ -898,6 +902,7 @@ async def generate_ai_insights(
         parsed_recs = fb_recs
         r_llm = False
     else:
+        # Sanitizar viñetas numéricas y guiones generados por el LLM
         raw_lines = [
             line.lstrip("0123456789.-* ").strip()
             for line in res_r.text.split("\n")
@@ -906,6 +911,7 @@ async def generate_ai_insights(
         parsed_recs = raw_lines if len(raw_lines) >= 2 else fb_recs
         r_llm = True
 
+    # Solo marcamos llm_generated=True si las 3 ramas se resolvieron exitosamente vía IA
     overall_llm_generated = w_llm and p_llm and r_llm
 
     narratives_resp = NarrativesResponse(
@@ -915,6 +921,7 @@ async def generate_ai_insights(
     )
 
     return narratives_resp, parsed_recs, overall_llm_generated
+
 
 
 
