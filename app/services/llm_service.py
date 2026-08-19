@@ -1,3 +1,21 @@
+"""
+app/services/llm_service.py
+
+Servicio Centralizado y Agnóstico de Proveedores LLM (Fase 2).
+============================================================
+
+Este módulo implementa el Patrón Adapter / Strategy para conectar el motor
+de benchmark con diferentes proveedores de IA generativa (Google Gemini, Anthropic Claude, Ollama).
+
+Características Principales:
+- Desacoplamiento de proveedores mediante `BaseLLMProvider`.
+- Validación Fail-Fast de credenciales al inicializar.
+- Inferencia con Google Gemini utilizando Interactions API y filtrado de steps `thought`.
+- Estrategia de Caching asíncrono con TTL de 24h mediante `AsyncTTLCache`.
+- Control de tasa mediante ventana deslizante con `SlidingWindowRateLimiter`.
+- Degradación suave (Graceful Fallback) ante errores o timeouts.
+"""
+
 from abc import ABC, abstractmethod
 import asyncio
 import logging
@@ -20,7 +38,15 @@ logger = logging.getLogger(__name__)
 class LLMResponse(BaseModel):
     """
     US-19: Estructura unificada de respuesta del servicio LLM.
+
+    Atributos:
+        text (str): Texto o narrativa generada por el LLM o contenido del fallback.
+        status (str): Estado de la operación ('success', 'cached', 'fallback', 'timeout', 'rate_limited').
+        provider (Optional[str]): Nombre del proveedor ('gemini', 'claude', 'ollama').
+        cached (bool): Indica si la respuesta se obtuvo de la caché en memoria.
+        latency_ms (float): Tiempo de respuesta en milisegundos.
     """
+
 
     text: str = Field(..., description="Texto o narrativa generada por el LLM o fallback")
     status: str = Field(
@@ -304,8 +330,31 @@ class LLMService:
         region: str,
     ) -> str:
         """
-        Construye la clave canónica de caché:
+        Construye la clave canónica de caché segmentada por rango de percentil:
         narrative:{dimension}:{percentile_range}:{size}:{region}
+
+        Rangos de Percentil:
+            - 0 - 25:   'p0_25'
+            - 26 - 50:  'p26_50'
+            - 51 - 75:  'p51_75'
+            - 76 - 100: 'p76_100'
+
+        Args:
+            dimension: Nombre de la dimensión ('latencia', 'visibilidad', etc.).
+            percentile: Valor entero del percentil del operador (0-100).
+            facility_size: Tamaño de la instalación ('small', 'medium', 'enterprise').
+            region: Región geográfica ('latam', 'na', 'emea', etc.).
+
+        Returns:
+            str: Clave canónica libre de colisiones.
+
+        Ejemplos:
+            >>> LLMService.build_cache_key("latencia", 32, "medium", "latam")
+            'narrative:latencia:p26_50:medium:latam'
+            >>> LLMService.build_cache_key("visibilidad", 80, "enterprise", "na")
+            'narrative:visibilidad:p76_100:enterprise:na'
+            >>> LLMService.build_cache_key("bloqueantes", 15, "small", "latam")
+            'narrative:bloqueantes:p0_25:small:latam'
         """
         if percentile <= 25:
             pct_range = "p0_25"
@@ -322,6 +371,9 @@ class LLMService:
         )
 
     def get_default_fallback(self) -> str:
+        """
+        Retorna el texto por defecto en caso de fallback global.
+        """
         return (
             "1. Implementar telemetría y monitoreo centralizado en tiempo real.\n"
             "2. Optimizar redundancia y eficiencia energética en sistemas críticos.\n"
@@ -335,12 +387,21 @@ class LLMService:
         fallback_text: Optional[str] = None,
     ) -> LLMResponse:
         """
-        Genera una narrativa de benchmark.
-        Aplica:
-        1. Cache Check (24 horas)
-        2. Rate Limiting (30 req/min)
-        3. Timeout de 5s y degradación a fallback en errores
+        Genera una narrativa de benchmark ejecutando la canalización de resiliencia:
+        1. Cache Lookup (TTL 24h): Si existe, retorna en <50ms con status='cached'.
+        2. Rate Limiter (Ventana deslizante): Si se supera el límite, retorna fallback con status='rate_limited'.
+        3. Inferencia Remota con Timeout: Si excede timeout_seconds, degrada suavemente a fallback con status='timeout'.
+        4. Manejo de Errores de API: Captura excepciones HTTP y retorna fallback con status='fallback'.
+
+        Args:
+            prompt (str): Texto del prompt enviado al modelo de lenguaje.
+            cache_key (Optional[str]): Clave canónica para guardar/recuperar de caché.
+            fallback_text (Optional[str]): Texto de contingencia técnico curado.
+
+        Returns:
+            LLMResponse: Objeto unificado con el texto generado, status, latencia y proveedor.
         """
+
         start_time = time.monotonic()
         fallback_val = fallback_text or self.get_default_fallback()
 
