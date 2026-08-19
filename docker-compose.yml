@@ -2,19 +2,20 @@ version: '3.8'
 
 services:
   db:
-    image: postgres:15-alpine
+    image: postgres:16-alpine
     container_name: benchmark_postgres
     restart: always
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-benchmark_db}
     ports:
       - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - benchmark_postgres_data:/var/lib/postgresql/data
       # Si querés que los scripts SQL se corran solos al levantar, descomentá esto:
       # - ./database/production:/docker-entrypoint-initdb.d
 
 volumes:
-  postgres_data:
+  benchmark_postgres_data:
+

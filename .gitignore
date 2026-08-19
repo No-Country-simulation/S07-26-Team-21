@@ -11,6 +11,11 @@ __pycache__/
 # Variables de entorno secretas/locales
 .env
 
-# Base de datos local / logs
+# Base de datos local / logs / cache
 *.log
 .pytest_cache/
+
+# Cobertura de Tests
+.coverage
+.coverage.*
+htmlcov/
