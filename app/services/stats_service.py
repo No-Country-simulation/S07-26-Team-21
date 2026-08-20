@@ -95,14 +95,45 @@ async def get_platform_stats(
             if s_name in by_size:
                 by_size[s_name] = int(s_count)
 
+        # Expresiones de cálculo dinámico para asegurar valores reales si las columnas cacheadas son NULL
+        calc_vis = (
+            UserEvaluation.p1_visibilidad_herramientas
+            + UserEvaluation.p2_visibilidad_dashboards
+            + UserEvaluation.p3_visibilidad_telemetry
+        ) / 3.0
+        calc_fric = (
+            UserEvaluation.p4_friccion_energia
+            + UserEvaluation.p5_friccion_cooling
+        ) / 2.0
+        calc_lat = (
+            UserEvaluation.p6_latencia_manual
+            + UserEvaluation.p7_latencia_semi_auto
+            + UserEvaluation.p8_latencia_full_auto
+        ) / 3.0
+        calc_cuant = (
+            UserEvaluation.p9_auto_cuant_pue
+            + UserEvaluation.p10_auto_cuant_utilizacion
+        ) / 2.0
+        calc_bloq = (
+            UserEvaluation.p11_bloqueantes_staffing
+            + UserEvaluation.p12_bloqueantes_supply
+            + UserEvaluation.p13_bloqueantes_energy
+            + UserEvaluation.p14_bloqueantes_regulacion
+            + UserEvaluation.p15_bloqueantes_expertise
+        ) / 5.0
+
         # 6. Promedio global de percentil general y promedios por dimensión
         averages_query = select(
-            func.coalesce(func.avg(UserEvaluation.percentile_general), 0.0),
-            func.coalesce(func.avg(UserEvaluation.score_visibilidad), 0.0),
-            func.coalesce(func.avg(UserEvaluation.score_friccion), 0.0),
-            func.coalesce(func.avg(UserEvaluation.score_latencia), 0.0),
-            func.coalesce(func.avg(UserEvaluation.score_auto_cuantificacion), 0.0),
-            func.coalesce(func.avg(UserEvaluation.score_bloqueantes), 0.0),
+            func.coalesce(
+                func.avg(UserEvaluation.percentile_general),
+                func.avg((calc_vis + calc_fric + calc_lat + calc_cuant + calc_bloq) / 5.0 * 20.0),
+                0.0,
+            ),
+            func.coalesce(func.avg(UserEvaluation.score_visibilidad), func.avg(calc_vis), 0.0),
+            func.coalesce(func.avg(UserEvaluation.score_friccion), func.avg(calc_fric), 0.0),
+            func.coalesce(func.avg(UserEvaluation.score_latencia), func.avg(calc_lat), 0.0),
+            func.coalesce(func.avg(UserEvaluation.score_auto_cuantificacion), func.avg(calc_cuant), 0.0),
+            func.coalesce(func.avg(UserEvaluation.score_bloqueantes), func.avg(calc_bloq), 0.0),
         )
         averages_res = await db.execute(averages_query)
         avg_row = averages_res.first()
